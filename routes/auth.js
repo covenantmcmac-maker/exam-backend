@@ -36,7 +36,6 @@ router.post('/register', async (req, res) => {
         role: user.role
       }
     });
-
   } catch (error) {
     console.error('Register error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -78,7 +77,6 @@ router.post('/login', async (req, res) => {
         role: user.role
       }
     });
-
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -93,7 +91,8 @@ router.get('/me', auth, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-// GUEST REGISTER (No full account needed)
+
+// GUEST REGISTER
 router.post('/guest-register', async (req, res) => {
   try {
     const { name, email, examCode } = req.body;
@@ -104,8 +103,9 @@ router.post('/guest-register', async (req, res) => {
       });
     }
 
-    // Check if exam exists
     const Exam = require('../models/Exam');
+    const ExamAttempt = require('../models/ExamAttempt');
+
     const exam = await Exam.findOne({
       accessCode: examCode.toUpperCase(),
       'settings.isPublished': true
@@ -117,11 +117,9 @@ router.post('/guest-register', async (req, res) => {
       });
     }
 
-    // Check if student already exists
     let user = await User.findOne({ email });
 
     if (!user) {
-      // Create guest student account
       user = new User({
         name,
         email,
@@ -131,7 +129,30 @@ router.post('/guest-register', async (req, res) => {
       await user.save();
     }
 
-    // Create token
+    const existingAttempt = await ExamAttempt.findOne({
+      exam: exam._id,
+      student: user._id,
+      status: { $ne: 'in-progress' }
+    });
+
+    if (existingAttempt) {
+      return res.status(400).json({
+        message: 'This email has already been used to take this exam. Each student can only take the exam once.'
+      });
+    }
+
+    const inProgressAttempt = await ExamAttempt.findOne({
+      exam: exam._id,
+      student: user._id,
+      status: 'in-progress'
+    });
+
+    if (inProgressAttempt) {
+      return res.status(400).json({
+        message: 'You already have an exam in progress.'
+      });
+    }
+
     const token = jwt.sign(
       { id: user._id },
       process.env.JWT_SECRET,
@@ -149,7 +170,6 @@ router.post('/guest-register', async (req, res) => {
         role: user.role
       }
     });
-
   } catch (error) {
     console.error('Guest register error:', error);
     res.status(500).json({ message: 'Error joining exam' });

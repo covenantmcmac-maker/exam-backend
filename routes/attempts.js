@@ -110,7 +110,6 @@ router.post('/:attemptId/submit', auth, async (req, res) => {
         attempt.answers[i].isCorrect = isCorrect;
         attempt.answers[i].pointsEarned = isCorrect ? maxPoints : 0;
         if (isCorrect) totalScore += maxPoints;
-
       } else if (question.questionType === 'short-answer' ||
                  question.questionType === 'fill-blank') {
         const isCorrect = answer.textAnswer?.toLowerCase().trim() ===
@@ -133,14 +132,24 @@ router.post('/:attemptId/submit', auth, async (req, res) => {
 
     await attempt.save();
 
-    res.json({
-      message: 'Exam submitted successfully',
-      score: attempt.score,
-      totalPoints: attempt.totalPoints,
-      percentage: attempt.percentage.toFixed(2),
-      timeSpent: attempt.timeSpent,
-      passed: attempt.score >= exam.settings.passingMarks
-    });
+    // Check if teacher wants to show results
+    if (exam.settings.showResults) {
+      res.json({
+        message: 'Exam submitted successfully',
+        showResults: true,
+        score: attempt.score,
+        totalPoints: attempt.totalPoints,
+        percentage: attempt.percentage.toFixed(2),
+        timeSpent: attempt.timeSpent,
+        passed: attempt.score >= exam.settings.passingMarks
+      });
+    } else {
+      res.json({
+        message: 'Exam submitted successfully',
+        showResults: false,
+        timeSpent: attempt.timeSpent
+      });
+    }
   } catch (error) {
     console.error('Submit error:', error);
     res.status(500).json({ message: 'Error submitting exam' });
@@ -160,6 +169,40 @@ router.get('/my-attempts', auth, async (req, res) => {
     res.json(attempts);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching attempts' });
+  }
+});
+
+// MANUAL GRADE
+router.patch('/:attemptId/grade', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { grades } = req.body;
+
+    const attempt = await ExamAttempt.findById(req.params.attemptId);
+    if (!attempt) {
+      return res.status(404).json({ message: 'Attempt not found' });
+    }
+
+    let additionalScore = 0;
+
+    for (const grade of grades) {
+      const answerIndex = attempt.answers.findIndex(
+        a => a.question.toString() === grade.questionId
+      );
+      if (answerIndex !== -1) {
+        attempt.answers[answerIndex].pointsEarned = grade.pointsEarned;
+        attempt.answers[answerIndex].isCorrect = grade.pointsEarned > 0;
+        additionalScore += grade.pointsEarned;
+      }
+    }
+
+    attempt.score += additionalScore;
+    attempt.percentage = (attempt.score / attempt.totalPoints) * 100;
+    attempt.status = 'graded';
+
+    await attempt.save();
+    res.json({ message: 'Graded successfully', attempt });
+  } catch (error) {
+    res.status(500).json({ message: 'Error grading attempt' });
   }
 });
 
