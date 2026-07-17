@@ -205,5 +205,32 @@ router.patch('/:attemptId/grade', auth, authorize('teacher', 'admin'), async (re
     res.status(500).json({ message: 'Error grading attempt' });
   }
 });
+// DELETE ATTEMPT (Teacher)
+router.delete('/:attemptId', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const attempt = await ExamAttempt.findById(req.params.attemptId)
+      .populate('exam');
+
+    if (!attempt) {
+      return res.status(404).json({ message: 'Attempt not found' });
+    }
+
+    // Check if teacher owns the exam
+    if (req.user.role === 'teacher') {
+      const exam = await Exam.findOne({
+        _id: attempt.exam._id || attempt.exam,
+        creator: req.user._id
+      });
+      if (!exam) {
+        return res.status(403).json({ message: 'Not authorized to delete this attempt' });
+      }
+    }
+
+    await ExamAttempt.findByIdAndDelete(req.params.attemptId);
+    res.json({ message: 'Attempt deleted. Student can retake the exam.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting attempt' });
+  }
+});
 
 module.exports = router;

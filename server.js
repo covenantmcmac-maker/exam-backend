@@ -36,6 +36,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/questions', require('./routes/questions'));
 app.use('/api/exams', require('./routes/exams'));
 app.use('/api/attempts', require('./routes/attempts'));
+app.use('/api/admin', require('./routes/admin'));
 
 // Error handling
 app.use((err, req, res, next) => {
