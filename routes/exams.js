@@ -265,5 +265,73 @@ router.delete('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
     res.status(500).json({ message: 'Error deleting exam' });
   }
 });
+// UPDATE EXAM
+router.put('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { title, description, subject, questions, settings } = req.body;
+
+    const exam = await Exam.findOne({
+      _id: req.params.id,
+      creator: req.user._id
+    });
+
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+
+    // Update fields
+    if (title) exam.title = title;
+    if (description !== undefined) exam.description = description;
+    if (subject !== undefined) exam.subject = subject;
+
+    if (questions) {
+      exam.questions = questions;
+      let totalMarks = 0;
+      questions.forEach(q => {
+        totalMarks += q.points || 1;
+      });
+      exam.settings.totalMarks = totalMarks;
+    }
+
+    if (settings) {
+      if (settings.duration !== undefined) exam.settings.duration = settings.duration;
+      if (settings.passingMarks !== undefined) exam.settings.passingMarks = settings.passingMarks;
+      if (settings.shuffleQuestions !== undefined) exam.settings.shuffleQuestions = settings.shuffleQuestions;
+      if (settings.showResults !== undefined) exam.settings.showResults = settings.showResults;
+      if (settings.maxAttempts !== undefined) exam.settings.maxAttempts = settings.maxAttempts;
+      if (settings.startDate !== undefined) exam.settings.startDate = settings.startDate;
+      if (settings.endDate !== undefined) exam.settings.endDate = settings.endDate;
+      if (settings.isPublished !== undefined) exam.settings.isPublished = settings.isPublished;
+    }
+
+    await exam.save();
+
+    res.json({
+      message: 'Exam updated successfully',
+      exam
+    });
+  } catch (error) {
+    console.error('Update exam error:', error);
+    res.status(500).json({ message: 'Error updating exam' });
+  }
+});
+
+// GET SINGLE EXAM FOR EDITING
+router.get('/:id/edit', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const exam = await Exam.findOne({
+      _id: req.params.id,
+      creator: req.user._id
+    }).populate('questions.question');
+
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+
+    res.json(exam);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching exam' });
+  }
+});
 
 module.exports = router;
