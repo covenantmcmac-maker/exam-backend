@@ -286,5 +286,61 @@ router.delete(
     }
   }
 );
+// PUBLIC JOIN - No auth required
+router.post('/join-public', async (req, res) => {
+  try {
+    const { accessCode } = req.body;
+
+    if (!accessCode) {
+      return res.status(400).json({
+        message: 'Access code required'
+      });
+    }
+
+    const exam = await Exam.findOne({
+      accessCode: accessCode.toUpperCase(),
+      'settings.isPublished': true
+    }).populate('creator', 'name');
+
+    if (!exam) {
+      return res.status(404).json({
+        message: 'Exam not found or not published'
+      });
+    }
+
+    const now = new Date();
+    if (exam.settings.startDate && now < exam.settings.startDate) {
+      return res.status(400).json({
+        message: 'Exam has not started yet'
+      });
+    }
+    if (exam.settings.endDate && now > exam.settings.endDate) {
+      return res.status(400).json({
+        message: 'Exam has ended'
+      });
+    }
+
+    res.json({
+      message: 'Exam found',
+      exam: {
+        _id: exam._id,
+        title: exam.title,
+        description: exam.description,
+        subject: exam.subject,
+        creator: exam.creator,
+        settings: {
+          duration: exam.settings.duration,
+          passingMarks: exam.settings.passingMarks,
+          totalMarks: exam.settings.totalMarks
+        },
+        questions: exam.questions
+      }
+    });
+
+  } catch (error) {
+    console.error('Public join error:', error);
+    res.status(500).json({ message: 'Error loading exam' });
+  }
+});
 
 module.exports = router;

@@ -93,5 +93,67 @@ router.get('/me', auth, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+// GUEST REGISTER (No full account needed)
+router.post('/guest-register', async (req, res) => {
+  try {
+    const { name, email, examCode } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({
+        message: 'Please enter your name and email'
+      });
+    }
+
+    // Check if exam exists
+    const Exam = require('../models/Exam');
+    const exam = await Exam.findOne({
+      accessCode: examCode.toUpperCase(),
+      'settings.isPublished': true
+    });
+
+    if (!exam) {
+      return res.status(404).json({
+        message: 'Exam not found or not published'
+      });
+    }
+
+    // Check if student already exists
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      // Create guest student account
+      user = new User({
+        name,
+        email,
+        password: 'guest_' + Date.now() + '_' + Math.random().toString(36),
+        role: 'student'
+      });
+      await user.save();
+    }
+
+    // Create token
+    const token = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      message: 'Joined successfully',
+      token,
+      examId: exam._id,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
+    });
+
+  } catch (error) {
+    console.error('Guest register error:', error);
+    res.status(500).json({ message: 'Error joining exam' });
+  }
+});
 
 module.exports = router;
