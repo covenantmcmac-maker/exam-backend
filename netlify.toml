@@ -1,0 +1,66 @@
+# Netlify configuration for the Exam Platform PWA.
+#
+# This lives at the repo root so that connecting this repository to Netlify
+# needs no configuration in the UI — Netlify reads everything from here.
+#
+# The Express API in this repo is NOT deployed by Netlify (it already runs on
+# Render). Netlify only builds and serves the installable web app in mobile/.
+
+[build]
+  # Run the build from the mobile/ directory rather than the repo root.
+  base = "mobile"
+
+  # Produces dist/ containing the app shell, service worker, manifest,
+  # icons, and the _headers/_redirects files.
+  command = "npm run build:pwa"
+
+  # Relative to `base`, i.e. mobile/dist.
+  publish = "dist"
+
+[build.environment]
+  # Expo 57 / React Native 0.86 need a modern Node. Netlify's default is
+  # older on some accounts and the build fails without this.
+  NODE_VERSION = "22"
+
+  # Skip Expo's interactive prompts on CI.
+  CI = "1"
+
+  # The live API. Change this to point the deployed app somewhere else —
+  # no code edit required. Do not add a trailing /api.
+  EXPO_PUBLIC_API_URL = "https://exam-backend-1-gbh3.onrender.com"
+
+# Client-side routing: every unknown path serves the app shell so deep links
+# and refreshes work instead of 404ing.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# A stale service worker can pin users to an old build forever, so it must
+# never be cached.
+[[headers]]
+  for = "/service-worker.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Content-Type = "application/manifest+json; charset=utf-8"
+
+# Expo's bundle filenames are content-hashed, so they are safe to cache hard.
+[[headers]]
+  for = "/_expo/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/icons/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"

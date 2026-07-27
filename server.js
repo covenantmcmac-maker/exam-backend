@@ -11,9 +11,17 @@ dotenv.config();
 const app = express();
 
 // Middleware
+// Browsers block any origin not listed here. Native mobile builds send no
+// Origin header and are unaffected, but every browser-based client needs an
+// entry — including the local dev servers below.
+//
+// Deploying the web app to a NEW domain? Add it here and redeploy, or login
+// will fail on the live site. `npm run check:deploy <url>` verifies this.
 app.use(cors({
   origin: [
-    'http://localhost:3000',
+    'http://localhost:3000',   // Create React App dev server
+    'http://localhost:8081',   // Expo web dev server (npm run web)
+    'http://localhost:8080',   // local PWA preview (npm run serve:pwa)
     'https://macmultimediaexams.netlify.app'
   ],
   credentials: true
