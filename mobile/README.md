@@ -1,6 +1,8 @@
-# MAC Multimedia Exams — Mobile & Web App
+# MAC Multimedia Exams — PWA, Mobile & Web App
 
-A single Expo (React Native) codebase that ships a native **Android** app, a native **iOS** app, and a **web** build. It talks to the Express + MongoDB API in the parent directory of this repository — no backend changes were required.
+A single Expo (React Native) codebase that ships an installable **Progressive Web App**, a native **Android** app, and a native **iOS** app. It talks to the Express + MongoDB API in the parent directory of this repository — no backend changes were required.
+
+**The PWA is the primary target**: users visit your URL, tap “Install”, and get a real home-screen app with its own icon, a splash screen, no browser chrome, and offline shell caching — with no app store involved.
 
 ---
 
@@ -13,9 +15,18 @@ npm install
 # point the app at your API (see .env.example for the right host)
 cp .env.example .env
 
-npm start          # dev server + QR code for Expo Go
-npm run web        # open in a browser
-npm run android    # Android emulator / connected device
+npm run web        # dev server in a browser
+
+# build and preview the installable PWA
+npm run build:pwa  # outputs dist/
+npm run serve:pwa  # http://localhost:8080
+```
+
+Native builds use the same codebase:
+
+```bash
+npm start          # QR code for Expo Go
+npm run android    # Android emulator / device
 npm run ios        # iOS simulator (macOS only)
 ```
 
@@ -71,6 +82,61 @@ new domain, add it to that list.
 
 ---
 
+## The PWA
+
+### What users get
+
+Visiting the site on Android/Chrome shows an in-app **Install** banner; tapping it adds a home-screen icon that launches full-screen with no address bar. On iOS Safari the banner explains the manual **Share → Add to Home Screen** step, since Safari has no install API.
+
+Once installed:
+
+- Launches from the home screen with its own icon and splash screen
+- Runs standalone — no browser UI
+- Loads instantly on repeat visits (the app shell is precached)
+- Shows a clear banner when the device goes offline
+- Offers a **Refresh** prompt when a new version is deployed
+
+### What is and isn't cached
+
+Only the app shell — HTML, the JS bundle, and icons — is cached. **Nothing under `/api/` is ever cached**, and cross-origin requests are passed straight through. Exam questions, attempts, and auth tokens always come from the network, so a student can't be served a stale paper or another user's data from disk. `npm run test:sw` asserts this by executing the service worker.
+
+This means the app **cannot be used offline for taking exams** — that is deliberate. Answers post to the server as you go, so an offline exam would silently lose work. The offline banner makes the state obvious instead.
+
+### Build and deploy
+
+```bash
+npm run build:pwa     # expo export + manifest, service worker, SPA fallbacks
+```
+
+Everything lands in `dist/`, ready for any static host. The build writes `_redirects` (Netlify) and `vercel.json` (Vercel) so client-side routes survive a refresh.
+
+```bash
+# Netlify
+npx netlify-cli deploy --prod --dir dist
+
+# Vercel
+npx vercel --prod dist
+
+# GitHub Pages, S3, nginx… — just serve dist/ as static files
+```
+
+**HTTPS is required.** Browsers only allow service workers and install prompts on secure origins (`localhost` is exempt for local testing). Netlify and Vercel both provide HTTPS automatically.
+
+Two headers matter on your host:
+
+| Path | Header |
+| --- | --- |
+| `/service-worker.js` | `Cache-Control: no-cache` |
+| `/_expo/static/*` | `Cache-Control: public, max-age=31536000, immutable` |
+
+Without the first, browsers can pin an old service worker and users stop receiving updates. `scripts/serve-pwa.mjs` applies both locally so you can verify behaviour before deploying.
+
+### Replacing the existing site
+
+The PWA is a drop-in replacement for the current React site: same API, same accounts. Point your Netlify site at `dist/` and everyone gets the installable version at the URL they already use. Add that domain to the CORS allowlist in `server.js` if it changes.
+
+---
+
 ## Screen map
 
 ```
@@ -111,32 +177,60 @@ mobile/
 │   │   └── ui.tsx              Button, Field, Card, Badge, StatTile, …
 │   ├── context/AuthContext.tsx session state and role helpers
 │   ├── navigation/             root navigator + route param types
+│   ├── pwa/                    install prompt, update + offline banners
 │   ├── screens/                auth, student, teacher, exam, admin
 │   └── theme.ts                colours, spacing, radii
-└── scripts/                    mock API + test suites
+├── public/                     copied verbatim into the build
+│   ├── index.html              HTML shell: manifest, meta tags, boot splash
+│   ├── manifest.webmanifest    name, icons, theme colours, shortcuts
+│   └── icons/                  PWA icon set incl. maskable + apple-touch
+└── scripts/
+    ├── build-pwa.mjs           generates the service worker + SPA fallbacks
+    ├── serve-pwa.mjs           local static host with correct MIME/caching
+    ├── mock-server.js          stand-in API for tests
+    └── test-*.{mjs,cjs}        test suites
 ```
+
+`public/index.html` is the template Expo injects the bundle into, and anything
+else in `public/` is copied as-is. The service worker is **generated** by
+`scripts/build-pwa.mjs` rather than hand-written, because Expo's bundle
+filenames are content-hashed and change every build.
 
 ---
 
 ## Testing
 
 ```bash
-npm run typecheck    # tsc --noEmit
-npm run test:api     # 26 API-contract checks against a mock server
-npm run test:e2e     # 40 UI checks driving the real web bundle
+npm run test:all     # everything below, in order
 ```
+
+| Command | Checks |
+| --- | --- |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run test:api` | 26 — API contract against a mock server |
+| `npm run test:pwa` | 39 — manifest, HTML head, icons, service worker, host config |
+| `npm run test:sw` | 23 — service worker executed in a simulated scope |
+| `npm run test:e2e` | 40 — student/teacher/guest journeys in the real bundle |
+| `npm run test:pwa:ui` | 20 — install prompt, iOS instructions, offline + update banners |
+
+**128 checks total.**
 
 `test:api` compiles the real `src/api` layer, stubs AsyncStorage in memory, and
 drives it against `scripts/mock-server.js` — verifying URLs, verbs, auth
 headers, payload shapes, and error handling.
 
-`test:e2e` boots the exported production web bundle in jsdom and walks through
-the student, teacher, and guest journeys, asserting both what the user sees and
-what the server received. It needs a build first:
+`test:e2e` and `test:pwa:ui` boot the exported production bundle in jsdom and
+assert both what the user sees and what the server received. They need a build
+first:
 
 ```bash
-npm run build:web:mock && npm run test:e2e
+npm run build:pwa:mock && npm run test:e2e && npm run test:pwa:ui
 ```
+
+`test:sw` runs the generated service worker inside a simulated
+`ServiceWorkerGlobalScope`, proving at runtime — not by inspection — that API
+responses are never written to the cache and that offline navigation falls back
+to the shell.
 
 ### A note on dialogs
 
@@ -148,7 +242,10 @@ Android, iOS, and web. **Use `useDialog()` rather than `Alert` in new code.**
 
 ---
 
-## Building for release
+## Building native apps (optional)
+
+The PWA covers most needs without an app store. If you also want store-listed
+native builds, the same codebase produces them.
 
 Install the CLI and sign in once:
 
@@ -182,7 +279,11 @@ npm run build:web        # outputs to dist/
 
 ### Before you ship
 
-- Replace the placeholder icons in `assets/` with real branding.
-- Point `eas.json` at your production API over **HTTPS**. Android blocks
+- Replace the generated icons in `assets/` (native) and `public/icons/` (PWA)
+  with real branding. `scripts/` has no icon generator — they were produced
+  once and committed.
+- Serve the PWA over **HTTPS**, or install prompts and the service worker
+  won't work at all.
+- Point `eas.json` at your production API over HTTPS too. Android blocks
   cleartext HTTP by default, so a plain `http://` host will fail on device.
-- Add your web build's domain to the CORS allowlist in `server.js`.
+- Add your deployed domain to the CORS allowlist in `server.js`.

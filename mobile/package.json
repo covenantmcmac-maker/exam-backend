@@ -34,7 +34,14 @@
     "mock:api": "node scripts/mock-server.js 5099",
     "test:api": "node scripts/smoke-test.mjs",
     "test:e2e": "node scripts/e2e-web.cjs",
-    "test": "npm run typecheck && npm run test:api"
+    "test": "npm run typecheck && npm run test:api",
+    "build:pwa": "expo export --platform web --output-dir dist --clear && node scripts/build-pwa.mjs dist",
+    "build:pwa:mock": "EXPO_PUBLIC_API_URL=http://127.0.0.1:5099 expo export --platform web --output-dir /tmp/webpreview --clear && node scripts/build-pwa.mjs /tmp/webpreview",
+    "serve:pwa": "node scripts/serve-pwa.mjs dist 8080",
+    "test:pwa": "node scripts/test-pwa.mjs",
+    "test:sw": "node scripts/test-sw-runtime.mjs",
+    "test:pwa:ui": "node scripts/test-pwa-ui.cjs",
+    "test:all": "npm run typecheck && npm run test:api && npm run build:pwa && npm run test:pwa && npm run test:sw && npm run build:pwa:mock && npm run test:e2e && npm run test:pwa:ui"
   },
   "private": true
 }
