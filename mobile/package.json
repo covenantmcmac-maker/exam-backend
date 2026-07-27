@@ -41,7 +41,8 @@
     "test:pwa": "node scripts/test-pwa.mjs",
     "test:sw": "node scripts/test-sw-runtime.mjs",
     "test:pwa:ui": "node scripts/test-pwa-ui.cjs",
-    "test:all": "npm run typecheck && npm run test:api && npm run build:pwa && npm run test:pwa && npm run test:sw && npm run build:pwa:mock && npm run test:e2e && npm run test:pwa:ui"
+    "test:all": "npm run typecheck && npm run test:api && npm run build:pwa && npm run test:pwa && npm run test:sw && npm run build:pwa:mock && npm run test:e2e && npm run test:pwa:ui",
+    "check:deploy": "node scripts/check-deploy.mjs"
   },
   "private": true
 }

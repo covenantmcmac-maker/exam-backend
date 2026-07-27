@@ -121,21 +121,20 @@ This means the app **cannot be used offline for taking exams** — that is delib
 
 ### Build and deploy
 
-```bash
-npm run build:pwa     # expo export + manifest, service worker, SPA fallbacks
-```
+**→ Full step-by-step guide: [DEPLOY.md](./DEPLOY.md)**
 
-Everything lands in `dist/`, ready for any static host. The build writes `_redirects` (Netlify) and `vercel.json` (Vercel) so client-side routes survive a refresh.
+Quick version — `netlify.toml` at the repo root means connecting this
+repository to Netlify needs no configuration at all. Otherwise:
 
 ```bash
-# Netlify
+npm run check:deploy https://your-domain.netlify.app   # catches CORS problems first
+npm run build:pwa                                      # → dist/
 npx netlify-cli deploy --prod --dir dist
-
-# Vercel
-npx vercel --prod dist
-
-# GitHub Pages, S3, nginx… — just serve dist/ as static files
 ```
+
+Everything lands in `dist/` (~1.1 MB), ready for any static host. The build
+writes `_redirects` and `_headers` (Netlify) plus `vercel.json` (Vercel) so
+client-side routes survive a refresh and the service worker is never cached.
 
 **HTTPS is required.** Browsers only allow service workers and install prompts on secure origins (`localhost` is exempt for local testing). Netlify and Vercel both provide HTTPS automatically.
 
