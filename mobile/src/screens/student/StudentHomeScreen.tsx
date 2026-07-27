@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -6,7 +6,9 @@ import { Button, Card, ErrorNote, Field, StatTile } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
 import { attemptsApi, examsApi } from '../../api/endpoints';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { ExamAttempt } from '../../api/types';
 import type { CompositeScreenProps } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
@@ -19,6 +21,8 @@ type Props = CompositeScreenProps<
 >;
 
 export default function StudentHomeScreen({ navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { user } = useAuth();
   const dialog = useDialog();
   const [code, setCode] = useState('');
@@ -167,7 +171,8 @@ export default function StudentHomeScreen({ navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   greeting: { fontSize: 26, fontWeight: '800', color: colors.text },

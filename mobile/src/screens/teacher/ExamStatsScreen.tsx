@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   RefreshControl,
   ScrollView,
@@ -10,7 +10,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, EmptyState, Loading, StatTile } from '../../components/ui';
 import { attemptsApi, examsApi } from '../../api/endpoints';
 import { useDialog } from '../../components/Dialog';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { ExamAttempt, ExamStats } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
@@ -18,6 +20,8 @@ import type { RootStackParamList } from '../../navigation/types';
 type Props = NativeStackScreenProps<RootStackParamList, 'ExamStats'>;
 
 export default function ExamStatsScreen({ route, navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { examId, title } = route.params;
   const dialog = useDialog();
   const [stats, setStats] = useState<ExamStats | null>(null);
@@ -163,7 +167,8 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   statRow: { flexDirection: 'row', gap: spacing.md, flexWrap: 'wrap' },

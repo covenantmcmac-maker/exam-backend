@@ -11,7 +11,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field, Loading } from '../../components/ui';
 import { examsApi, questionsApi } from '../../api/endpoints';
 import { useDialog } from '../../components/Dialog';
-import { colors, difficultyColor, radius, spacing } from '../../theme';
+import { difficultyColor, radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { Question } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
@@ -19,6 +21,8 @@ import type { RootStackParamList } from '../../navigation/types';
 type Props = NativeStackScreenProps<RootStackParamList, 'ExamBuilder'>;
 
 export default function ExamBuilderScreen({ route, navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const examId = route.params?.examId;
   const isEdit = !!examId;
   const dialog = useDialog();
@@ -290,6 +294,8 @@ function Toggle({
   value: boolean;
   onChange: (v: boolean) => void;
 }) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <View style={styles.toggleRow}>
       <Text style={styles.toggleLabel}>{label}</Text>
@@ -303,7 +309,8 @@ function Toggle({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   section: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.lg },

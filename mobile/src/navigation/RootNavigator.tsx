@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Text } from 'react-native';
 import {
   NavigationContainer,
@@ -8,7 +8,8 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 import { useAuth } from '../context/AuthContext';
-import { colors } from '../theme';
+import { useColors } from '../context/ThemeContext';
+import type { Colors } from '../theme';
 import { Loading } from '../components/ui';
 
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -28,6 +29,7 @@ import QuestionEditorScreen from '../screens/teacher/QuestionEditorScreen';
 
 import ExamTakingScreen from '../screens/exam/ExamTakingScreen';
 import ExamResultScreen from '../screens/exam/ExamResultScreen';
+import BulkImportScreen from '../screens/teacher/BulkImportScreen';
 import AdminPanelScreen from '../screens/admin/AdminPanelScreen';
 
 import type {
@@ -50,13 +52,13 @@ function icon(glyph: string) {
   );
 }
 
-const tabOptions = {
+const makeTabOptions = (colors: Colors) => ({
   headerShown: false,
   tabBarActiveTintColor: colors.primary,
   tabBarInactiveTintColor: colors.textLight,
   tabBarStyle: { borderTopColor: colors.border, backgroundColor: colors.card },
   tabBarLabelStyle: { fontSize: 11, fontWeight: '600' as const },
-};
+});
 
 function AuthFlow() {
   return (
@@ -69,6 +71,8 @@ function AuthFlow() {
 }
 
 function StudentFlow() {
+  const colors = useColors();
+  const tabOptions = useMemo(() => makeTabOptions(colors), [colors]);
   return (
     <StudentTabs.Navigator screenOptions={tabOptions}>
       <StudentTabs.Screen
@@ -91,6 +95,8 @@ function StudentFlow() {
 }
 
 function TeacherFlow() {
+  const colors = useColors();
+  const tabOptions = useMemo(() => makeTabOptions(colors), [colors]);
   return (
     <TeacherTabs.Navigator screenOptions={tabOptions}>
       <TeacherTabs.Screen
@@ -119,6 +125,7 @@ function TeacherFlow() {
 
 export default function RootNavigator() {
   const { user, loading, isTeacher, pendingExamId, clearPendingExam } = useAuth();
+  const colors = useColors();
   const navReady = useRef(false);
 
   // A guest who joined with an access code lands straight in the exam.
@@ -184,6 +191,11 @@ export default function RootNavigator() {
             <RootStack.Screen name="ExamBuilder" component={ExamBuilderScreen} />
             <RootStack.Screen name="ExamStats" component={ExamStatsScreen} />
             <RootStack.Screen name="QuestionEditor" component={QuestionEditorScreen} />
+            <RootStack.Screen
+              name="BulkImport"
+              component={BulkImportScreen}
+              options={{ title: 'Import questions' }}
+            />
             <RootStack.Screen
               name="AdminPanel"
               component={AdminPanelScreen}

@@ -12,7 +12,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Loading } from '../../components/ui';
 import { useDialog } from '../../components/Dialog';
 import { attemptsApi, examsApi } from '../../api/endpoints';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { Exam, Question } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
@@ -36,6 +38,8 @@ function fmt(totalSeconds: number) {
 }
 
 export default function ExamTakingScreen({ route, navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { examId } = route.params;
   const dialog = useDialog();
 
@@ -411,7 +415,8 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   errorIcon: { fontSize: 44 },

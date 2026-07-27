@@ -1,6 +1,8 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors, radius, spacing } from '../theme';
+import { useColors } from '../context/ThemeContext';
+import { radius, spacing } from '../theme';
+import type { Colors } from '../theme';
 
 /**
  * Cross-platform dialogs.
@@ -101,6 +103,8 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     [open]
   );
 
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const stacked = (state?.actions.length ?? 0) > 2;
 
   return (
@@ -156,38 +160,39 @@ export function useDialog(): DialogApi {
   return ctx;
 }
 
-const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(17,24,39,0.45)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xl,
-  },
-  card: {
-    width: '100%',
-    maxWidth: 420,
-    backgroundColor: colors.card,
-    borderRadius: radius.lg,
-    padding: spacing.xl,
-  },
-  title: { fontSize: 18, fontWeight: '800', color: colors.text },
-  message: { fontSize: 15, color: colors.textMuted, lineHeight: 21, marginTop: spacing.sm },
-  actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.xl },
-  actionsStacked: { flexDirection: 'column-reverse' },
-  action: {
-    flex: 1,
-    height: 46,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.primary,
-    paddingHorizontal: spacing.lg,
-  },
-  actionStacked: { flex: 0, width: '100%' },
-  actionCancel: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
-  actionDestructive: { backgroundColor: colors.danger },
-  actionText: { fontSize: 15, fontWeight: '700', color: colors.white },
-  actionTextCancel: { color: colors.textMuted },
-  actionTextDestructive: { color: colors.white },
-});
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
+    backdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(17,24,39,0.45)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: spacing.xl,
+    },
+    card: {
+      width: '100%',
+      maxWidth: 420,
+      backgroundColor: colors.card,
+      borderRadius: radius.lg,
+      padding: spacing.xl,
+    },
+    title: { fontSize: 18, fontWeight: '800', color: colors.text },
+    message: { fontSize: 15, color: colors.textMuted, lineHeight: 21, marginTop: spacing.sm },
+    actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.xl },
+    actionsStacked: { flexDirection: 'column-reverse' },
+    action: {
+      flex: 1,
+      height: 46,
+      borderRadius: radius.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.primary,
+      paddingHorizontal: spacing.lg,
+    },
+    actionStacked: { flex: 0, width: '100%' },
+    actionCancel: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
+    actionDestructive: { backgroundColor: colors.danger },
+    actionText: { fontSize: 15, fontWeight: '700', color: colors.white },
+    actionTextCancel: { color: colors.textMuted },
+    actionTextDestructive: { color: colors.white },
+  });

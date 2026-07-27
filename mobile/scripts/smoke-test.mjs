@@ -236,6 +236,13 @@ try {
   const newQ = await questionsApi.create({ questionText: 'Q?', questionType: 'essay' });
   check('create question returns id', newQ._id === 'q2');
 
+  const bulk = await questionsApi.bulkUpload({
+    uri: 'file:///tmp/questions.csv',
+    name: 'questions.csv',
+    type: 'text/csv',
+  });
+  check('bulk upload returns imported count', bulk.count === 3);
+
   console.log('\nAdmin');
   const adminStats = await adminApi.stats();
   check('admin stats shape matches backend', adminStats.totalUsers === 3);

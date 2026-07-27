@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -9,7 +9,16 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
-import { colors, radius, shadow, spacing } from '../theme';
+import { useColors } from '../context/ThemeContext';
+import { radius, shadow, spacing } from '../theme';
+import type { Colors } from '../theme';
+
+/** Shared themed styles for the UI kit, recomputed when the theme changes. */
+function useUiStyles() {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  return { colors, styles };
+}
 
 /* ---------------------------------------------------------------- Button */
 
@@ -32,6 +41,7 @@ export function Button({
   style,
   size = 'md',
 }: ButtonProps) {
+  const { colors, styles } = useUiStyles();
   const isDisabled = disabled || loading;
 
   const bg = {
@@ -82,6 +92,7 @@ interface FieldProps extends TextInputProps {
 }
 
 export function Field({ label, hint, style, ...rest }: FieldProps) {
+  const { colors, styles } = useUiStyles();
   return (
     <View style={styles.fieldWrap}>
       {!!label && <Text style={styles.label}>{label}</Text>}
@@ -104,6 +115,7 @@ export function Card({
   children: React.ReactNode;
   style?: ViewStyle;
 }) {
+  const { styles } = useUiStyles();
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
@@ -111,16 +123,17 @@ export function Card({
 
 export function Badge({
   text,
-  color = colors.primary,
-  bg = colors.primaryLight,
+  color,
+  bg,
 }: {
   text: string;
   color?: string;
   bg?: string;
 }) {
+  const { colors, styles } = useUiStyles();
   return (
-    <View style={[styles.badge, { backgroundColor: bg }]}>
-      <Text style={[styles.badgeText, { color }]}>{text}</Text>
+    <View style={[styles.badge, { backgroundColor: bg ?? colors.primaryLight }]}>
+      <Text style={[styles.badgeText, { color: color ?? colors.primary }]}>{text}</Text>
     </View>
   );
 }
@@ -128,6 +141,7 @@ export function Badge({
 /* ------------------------------------------------------------ Empty/Load */
 
 export function Loading({ text = 'Loading…' }: { text?: string }) {
+  const { colors, styles } = useUiStyles();
   return (
     <View style={styles.center}>
       <ActivityIndicator size="large" color={colors.primary} />
@@ -147,6 +161,7 @@ export function EmptyState({
   subtitle?: string;
   action?: React.ReactNode;
 }) {
+  const { styles } = useUiStyles();
   return (
     <View style={styles.center}>
       <Text style={styles.emptyIcon}>{icon}</Text>
@@ -158,6 +173,7 @@ export function EmptyState({
 }
 
 export function ErrorNote({ message }: { message?: string | null }) {
+  const { styles } = useUiStyles();
   if (!message) return null;
   return (
     <View style={styles.errorBox}>
@@ -171,98 +187,100 @@ export function ErrorNote({ message }: { message?: string | null }) {
 export function StatTile({
   label,
   value,
-  tint = colors.primary,
+  tint,
 }: {
   label: string;
   value: string | number;
   tint?: string;
 }) {
+  const { colors, styles } = useUiStyles();
   return (
     <View style={styles.stat}>
-      <Text style={[styles.statValue, { color: tint }]}>{value}</Text>
+      <Text style={[styles.statValue, { color: tint ?? colors.primary }]}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  btn: {
-    height: 50,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.lg,
-  },
-  btnSm: { height: 38, borderRadius: radius.sm, paddingHorizontal: spacing.md },
-  btnGhost: { borderWidth: 1, borderColor: colors.border },
-  btnText: { fontSize: 16, fontWeight: '700' },
-  btnTextSm: { fontSize: 14 },
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
+    btn: {
+      height: 50,
+      borderRadius: radius.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: spacing.lg,
+    },
+    btnSm: { height: 38, borderRadius: radius.sm, paddingHorizontal: spacing.md },
+    btnGhost: { borderWidth: 1, borderColor: colors.border },
+    btnText: { fontSize: 16, fontWeight: '700' },
+    btnTextSm: { fontSize: 14 },
 
-  fieldWrap: { marginBottom: spacing.lg },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.textMuted,
-    marginBottom: spacing.xs + 2,
-  },
-  input: {
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 13,
-    fontSize: 16,
-    color: colors.text,
-  },
-  hint: { fontSize: 12, color: colors.textLight, marginTop: spacing.xs },
+    fieldWrap: { marginBottom: spacing.lg },
+    label: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.textMuted,
+      marginBottom: spacing.xs + 2,
+    },
+    input: {
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius.md,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: 13,
+      fontSize: 16,
+      color: colors.text,
+    },
+    hint: { fontSize: 12, color: colors.textLight, marginTop: spacing.xs },
 
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    ...shadow.card,
-  },
+    card: {
+      backgroundColor: colors.card,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      marginBottom: spacing.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      ...shadow.card,
+    },
 
-  badge: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
-    alignSelf: 'flex-start',
-  },
-  badgeText: { fontSize: 12, fontWeight: '700' },
+    badge: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: 4,
+      borderRadius: radius.pill,
+      alignSelf: 'flex-start',
+    },
+    badgeText: { fontSize: 12, fontWeight: '700' },
 
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
-  centerText: {
-    marginTop: spacing.md,
-    color: colors.textMuted,
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  emptyIcon: { fontSize: 48, marginBottom: spacing.sm },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: colors.text, textAlign: 'center' },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+    centerText: {
+      marginTop: spacing.md,
+      color: colors.textMuted,
+      fontSize: 14,
+      textAlign: 'center',
+    },
+    emptyIcon: { fontSize: 48, marginBottom: spacing.sm },
+    emptyTitle: { fontSize: 18, fontWeight: '700', color: colors.text, textAlign: 'center' },
 
-  errorBox: {
-    backgroundColor: colors.dangerLight,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    marginBottom: spacing.lg,
-  },
-  errorText: { color: colors.danger, fontSize: 14, fontWeight: '500' },
+    errorBox: {
+      backgroundColor: colors.dangerLight,
+      borderRadius: radius.md,
+      padding: spacing.md,
+      marginBottom: spacing.lg,
+    },
+    errorText: { color: colors.danger, fontSize: 14, fontWeight: '500' },
 
-  stat: {
-    flex: 1,
-    minWidth: 140,
-    backgroundColor: colors.card,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    ...shadow.card,
-  },
-  statValue: { fontSize: 26, fontWeight: '800' },
-  statLabel: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
-});
+    stat: {
+      flex: 1,
+      minWidth: 140,
+      backgroundColor: colors.card,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      borderWidth: 1,
+      borderColor: colors.border,
+      ...shadow.card,
+    },
+    statValue: { fontSize: 26, fontWeight: '800' },
+    statLabel: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+  });

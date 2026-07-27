@@ -1,4 +1,5 @@
 import { request, uploadFile } from './client';
+import type { UploadableFile } from './client';
 import type {
   AdminStats,
   Exam,
@@ -121,7 +122,7 @@ export const questionsApi = {
       body: { questionIds },
     }),
 
-  bulkUpload: (file: { uri: string; name: string; type: string }) =>
+  bulkUpload: (file: UploadableFile) =>
     uploadFile<{ message: string; count: number }>('/api/questions/bulk-upload', file),
 };
 

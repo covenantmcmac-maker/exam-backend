@@ -222,6 +222,19 @@ const server = http.createServer((req, res) => {
       case 'POST /api/questions':
         return send(res, 201, { ...question, _id: 'q2' });
 
+      case 'POST /api/questions/bulk-upload':
+        // Multipart body — the mock just pretends three questions landed.
+        return send(res, 201, {
+          message: 'Successfully uploaded 3 questions!',
+          count: 3,
+        });
+
+      case 'POST /api/questions/bulk-delete':
+        return send(res, 200, {
+          message: 'Successfully deleted questions',
+          deletedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0,
+        });
+
       case 'GET /api/admin/stats':
         return send(res, 200, {
           totalUsers: 3,

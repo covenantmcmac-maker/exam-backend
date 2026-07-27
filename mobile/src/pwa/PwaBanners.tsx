@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { colors, radius, shadow, spacing } from '../theme';
+import { radius, shadow, spacing } from '../theme';
+import { useColors } from '../context/ThemeContext';
+import type { Colors } from '../theme';
 import { useInstallPrompt, useOnlineStatus, useServiceWorkerUpdate } from './usePwa';
 
 const DISMISS_KEY = '@pwa_install_dismissed';
@@ -16,6 +18,8 @@ export default function PwaBanners() {
 }
 
 function Banners() {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const online = useOnlineStatus();
   const { updateReady, applyUpdate } = useServiceWorkerUpdate();
   const { canInstall, needsManualInstall, promptInstall } = useInstallPrompt();
@@ -108,7 +112,8 @@ function Banners() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   bar: {
     flexDirection: 'row',
     alignItems: 'center',

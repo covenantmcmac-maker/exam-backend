@@ -36,5 +36,6 @@ export type RootStackParamList = {
   ExamBuilder: { examId?: string } | undefined;
   ExamStats: { examId: string; title?: string };
   QuestionEditor: { questionId?: string } | undefined;
+  BulkImport: undefined;
   AdminPanel: undefined;
 };

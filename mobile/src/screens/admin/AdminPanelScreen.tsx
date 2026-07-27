@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   RefreshControl,
@@ -12,7 +12,9 @@ import { Badge, Button, Card, Field, Loading, StatTile } from '../../components/
 import { adminApi } from '../../api/endpoints';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { AdminStats, Exam, ExamAttempt, Role, User } from '../../api/types';
 
 type Tab = 'overview' | 'users' | 'exams' | 'attempts';
@@ -24,13 +26,16 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'attempts', label: 'Attempts' },
 ];
 
-const roleTint: Record<string, { fg: string; bg: string }> = {
+const makeRoleTint = (colors: Colors): Record<string, { fg: string; bg: string }> => ({
   admin: { fg: colors.danger, bg: colors.dangerLight },
   teacher: { fg: colors.primary, bg: colors.primaryLight },
   student: { fg: colors.success, bg: colors.successLight },
-};
+});
 
 export default function AdminPanelScreen() {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const roleTint = useMemo(() => makeRoleTint(colors), [colors]);
   const { user: me } = useAuth();
   const dialog = useDialog();
   const [tab, setTab] = useState<Tab>('overview');
@@ -298,7 +303,8 @@ export default function AdminPanelScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   tabStrip: { maxHeight: 56, backgroundColor: colors.card },
   tabStripInner: {
