@@ -1,11 +1,13 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, StatTile } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 import { examsApi, questionsApi } from '../../api/endpoints';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { Exam } from '../../api/types';
 import type { CompositeScreenProps } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
@@ -18,6 +20,8 @@ type Props = CompositeScreenProps<
 >;
 
 export default function TeacherDashboardScreen({ navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { user, isAdmin } = useAuth();
   const [exams, setExams] = useState<Exam[]>([]);
   const [questionCount, setQuestionCount] = useState(0);
@@ -155,7 +159,8 @@ export default function TeacherDashboardScreen({ navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   greeting: { fontSize: 26, fontWeight: '800', color: colors.text },

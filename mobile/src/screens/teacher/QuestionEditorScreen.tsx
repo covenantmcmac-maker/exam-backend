@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -10,7 +10,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field, Loading } from '../../components/ui';
 import { questionsApi } from '../../api/endpoints';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { QuestionType } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
@@ -28,6 +30,8 @@ const TYPES: { value: QuestionType; label: string }[] = [
 const DIFFICULTIES = ['easy', 'medium', 'hard'] as const;
 
 export default function QuestionEditorScreen({ route, navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const questionId = route.params?.questionId;
   const isEdit = !!questionId;
 
@@ -295,7 +299,8 @@ export default function QuestionEditorScreen({ route, navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   section: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.md },

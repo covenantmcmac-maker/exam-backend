@@ -105,16 +105,58 @@ export async function request<T>(
   return data as T;
 }
 
+/**
+ * A file ready for multipart upload.
+ *
+ * - On web this is a real browser `File` (from a file input).
+ * - On React Native it is the `{ uri, name, type }` descriptor returned by
+ *   the document picker.
+ *
+ * The two are NOT interchangeable — `uploadFile` branches on platform and
+ * rejects the wrong shape instead of silently uploading nothing.
+ */
+export type UploadableFile = File | { uri: string; name: string; type: string };
+
+/**
+ * True in the browser (web build). Deliberately NOT `Platform.OS === 'web'`:
+ * this module is imported directly under Node by scripts/smoke-test.mjs,
+ * where importing react-native would crash the whole API layer.
+ */
+const isWeb = typeof document !== 'undefined';
+
+function isBrowserFile(file: UploadableFile): file is File {
+  return typeof Blob !== 'undefined' && file instanceof Blob;
+}
+
 /** Multipart upload used by the bulk question importer. */
 export async function uploadFile<T>(
   path: string,
-  file: { uri: string; name: string; type: string },
+  file: UploadableFile,
   field = 'file'
 ): Promise<T> {
   const token = await getToken();
   const form = new FormData();
-  // React Native's FormData accepts this shape for file parts.
-  form.append(field, file as unknown as Blob);
+
+  if (isWeb) {
+    // Browsers need a real Blob/File part. Appending the RN-style
+    // { uri, name, type } object here would serialize it as "[object
+    // Object]" and the server would receive an empty, silent upload.
+    if (!isBrowserFile(file)) {
+      throw new ApiError('Web uploads require a browser File.', 0);
+    }
+    form.append(field, file, file.name);
+  } else {
+    // React Native's FormData expects the { uri, name, type } descriptor for
+    // file parts; a browser File has no readable local uri on native.
+    if (isBrowserFile(file)) {
+      throw new ApiError('Native uploads require a { uri, name, type } file.', 0);
+    }
+    form.append(field, {
+      uri: file.uri,
+      name: file.name,
+      type: file.type,
+    } as unknown as Blob);
+  }
 
   const res = await fetch(`${API_BASE_URL}${path}`, {
     method: 'POST',

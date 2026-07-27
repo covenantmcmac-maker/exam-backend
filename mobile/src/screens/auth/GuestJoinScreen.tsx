@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -11,7 +11,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 import { examsApi } from '../../api/endpoints';
-import { colors, spacing } from '../../theme';
+import { spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '../../navigation/types';
 import type { Exam } from '../../api/types';
@@ -19,6 +21,8 @@ import type { Exam } from '../../api/types';
 type Props = NativeStackScreenProps<AuthStackParamList, 'GuestJoin'>;
 
 export default function GuestJoinScreen({ navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { guestJoin } = useAuth();
   const [code, setCode] = useState('');
   const [preview, setPreview] = useState<Exam | null>(null);
@@ -145,7 +149,8 @@ export default function GuestJoinScreen({ navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.xl, paddingBottom: spacing.xxl },
   title: { fontSize: 26, fontWeight: '800', color: colors.text },

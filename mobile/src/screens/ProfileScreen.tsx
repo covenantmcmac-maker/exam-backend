@@ -1,22 +1,27 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Badge, Button, Card } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { useDialog } from '../components/Dialog';
-import { colors, radius, spacing } from '../theme';
+import { radius, spacing } from '../theme';
+import { useColors } from '../context/ThemeContext';
+import type { Colors } from '../theme';
 import { API_BASE_URL, APP_NAME } from '../config';
 import type { RootStackParamList } from '../navigation/types';
 import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 
-const roleTint: Record<string, { fg: string; bg: string }> = {
+const makeRoleTint = (colors: Colors): Record<string, { fg: string; bg: string }> => ({
   admin: { fg: colors.danger, bg: colors.dangerLight },
   teacher: { fg: colors.primary, bg: colors.primaryLight },
   student: { fg: colors.success, bg: colors.successLight },
-};
+});
 
 export default function ProfileScreen() {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const roleTint = useMemo(() => makeRoleTint(colors), [colors]);
   const { user, logout, isAdmin } = useAuth();
   const dialog = useDialog();
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
@@ -87,7 +92,8 @@ export default function ProfileScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   title: { fontSize: 26, fontWeight: '800', color: colors.text, marginBottom: spacing.lg },

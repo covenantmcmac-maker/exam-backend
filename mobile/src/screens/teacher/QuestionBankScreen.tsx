@@ -3,6 +3,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -12,7 +13,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, Field, Loading } from '../../components/ui';
 import { questionsApi } from '../../api/endpoints';
 import { useDialog } from '../../components/Dialog';
-import { colors, difficultyColor, radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import { difficultyColor, radius, spacing } from '../../theme';
+import type { Colors } from '../../theme';
 import type { Question } from '../../api/types';
 import type { CompositeScreenProps } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
@@ -28,11 +31,14 @@ const FILTERS = ['all', 'easy', 'medium', 'hard'] as const;
 
 export default function QuestionBankScreen({ navigation }: Props) {
   const dialog = useDialog();
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('all');
+  const [subject, setSubject] = useState<string>('all');
   const [selectMode, setSelectMode] = useState(false);
   const [picked, setPicked] = useState<Record<string, true>>({});
 
@@ -59,6 +65,23 @@ export default function QuestionBankScreen({ navigation }: Props) {
     setRefreshing(false);
   };
 
+  /** Distinct subjects among the loaded questions, with counts. */
+  const subjects = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const q of questions) {
+      const s = (q.subject || '').trim();
+      if (!s) continue;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ name, count }));
+  }, [questions]);
+
+  // If questions are reloaded and the active subject disappears, fall back to all.
+  const effectiveSubject =
+    subject === 'all' || subjects.some((s) => s.name === subject) ? subject : 'all';
+
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
     return questions.filter((q) => {
@@ -67,9 +90,11 @@ export default function QuestionBankScreen({ navigation }: Props) {
         q.questionText.toLowerCase().includes(term) ||
         (q.subject || '').toLowerCase().includes(term);
       const matchesFilter = filter === 'all' || q.difficulty === filter;
-      return matchesTerm && matchesFilter;
+      const matchesSubject =
+        effectiveSubject === 'all' || (q.subject || '').trim() === effectiveSubject;
+      return matchesTerm && matchesFilter && matchesSubject;
     });
-  }, [questions, search, filter]);
+  }, [questions, search, filter, effectiveSubject]);
 
   const pickedIds = Object.keys(picked);
 
@@ -144,6 +169,12 @@ export default function QuestionBankScreen({ navigation }: Props) {
               onPress={() => setSelectMode(true)}
             />
             <Button
+              title="Import"
+              variant="ghost"
+              size="sm"
+              onPress={() => navigation.navigate('BulkImport')}
+            />
+            <Button
               title="+ New"
               size="sm"
               onPress={() => navigation.navigate('QuestionEditor')}
@@ -159,6 +190,38 @@ export default function QuestionBankScreen({ navigation }: Props) {
           placeholder="Search questions…"
           style={styles.search}
         />
+        {subjects.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.subjectRow}
+          >
+            <Pressable
+              onPress={() => setSubject('all')}
+              style={[styles.chip, effectiveSubject === 'all' && styles.chipActive]}
+            >
+              <Text
+                style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
+              >
+                all subjects ({questions.length})
+              </Text>
+            </Pressable>
+            {subjects.map((s) => {
+              const active = effectiveSubject === s.name;
+              return (
+                <Pressable
+                  key={s.name}
+                  onPress={() => setSubject(s.name)}
+                  style={[styles.chip, active && styles.chipActive]}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                    {s.name} ({s.count})
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
         <View style={styles.filterRow}>
           {FILTERS.map((f) => {
             const active = filter === f;
@@ -173,6 +236,9 @@ export default function QuestionBankScreen({ navigation }: Props) {
             );
           })}
         </View>
+        <Text style={styles.showing}>
+          Showing {visible.length} of {questions.length}
+        </Text>
       </View>
 
       <FlatList
@@ -285,54 +351,57 @@ export default function QuestionBankScreen({ navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-  },
-  headerActions: { flexDirection: 'row', gap: spacing.sm },
-  title: { fontSize: 26, fontWeight: '800', color: colors.text },
-  controls: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
-  search: { marginBottom: 0 },
-  filterRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.md },
-  chip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
-  },
-  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  chipText: { fontSize: 13, color: colors.textMuted, textTransform: 'capitalize', fontWeight: '600' },
-  chipTextActive: { color: colors.white },
-  list: { padding: spacing.lg, paddingTop: 0, paddingBottom: spacing.xxl },
-  emptyWrap: { flexGrow: 1 },
-  cardPicked: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
-  rowTop: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
-  check: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  checkOn: { backgroundColor: colors.primary, borderColor: colors.primary },
-  checkMark: { color: colors.white, fontSize: 13, fontWeight: '900' },
-  qText: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.text, lineHeight: 21 },
-  optionList: { marginTop: spacing.sm, gap: 2 },
-  optionText: { fontSize: 13, color: colors.textMuted },
-  optionCorrect: { color: colors.success, fontWeight: '700' },
-  answerLine: { fontSize: 13, color: colors.success, fontWeight: '600', marginTop: spacing.sm },
-  metaRow: { flexDirection: 'row', gap: 6, marginTop: spacing.md, flexWrap: 'wrap' },
-  difficulty: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
-  meta: { fontSize: 12, color: colors.textMuted, textTransform: 'capitalize' },
-  cardActions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
-});
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
+    safe: { flex: 1, backgroundColor: colors.bg },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.sm,
+    },
+    headerActions: { flexDirection: 'row', gap: spacing.sm },
+    title: { fontSize: 26, fontWeight: '800', color: colors.text },
+    controls: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+    search: { marginBottom: 0 },
+    subjectRow: { gap: spacing.sm, marginTop: spacing.md },
+    filterRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.md },
+    showing: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
+    chip: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: 6,
+      borderRadius: radius.pill,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.card,
+    },
+    chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+    chipText: { fontSize: 13, color: colors.textMuted, textTransform: 'capitalize', fontWeight: '600' },
+    chipTextActive: { color: colors.white },
+    list: { padding: spacing.lg, paddingTop: 0, paddingBottom: spacing.xxl },
+    emptyWrap: { flexGrow: 1 },
+    cardPicked: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+    rowTop: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
+    check: {
+      width: 22,
+      height: 22,
+      borderRadius: 6,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 2,
+    },
+    checkOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+    checkMark: { color: colors.white, fontSize: 13, fontWeight: '900' },
+    qText: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.text, lineHeight: 21 },
+    optionList: { marginTop: spacing.sm, gap: 2 },
+    optionText: { fontSize: 13, color: colors.textMuted },
+    optionCorrect: { color: colors.success, fontWeight: '700' },
+    answerLine: { fontSize: 13, color: colors.success, fontWeight: '600', marginTop: spacing.sm },
+    metaRow: { flexDirection: 'row', gap: 6, marginTop: spacing.md, flexWrap: 'wrap' },
+    difficulty: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
+    meta: { fontSize: 12, color: colors.textMuted, textTransform: 'capitalize' },
+    cardActions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
+  });

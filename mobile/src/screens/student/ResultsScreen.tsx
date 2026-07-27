@@ -1,10 +1,12 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Card, EmptyState, Loading } from '../../components/ui';
 import { attemptsApi } from '../../api/endpoints';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { ExamAttempt } from '../../api/types';
 
 function formatDuration(seconds?: number) {
@@ -26,6 +28,8 @@ function formatDate(iso?: string) {
 }
 
 export default function ResultsScreen() {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -139,7 +143,8 @@ export default function ResultsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   title: {
     fontSize: 26,

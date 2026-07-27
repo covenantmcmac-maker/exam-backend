@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   FlatList,
   Pressable,
@@ -13,7 +13,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, Loading } from '../../components/ui';
 import { examsApi } from '../../api/endpoints';
 import { useDialog } from '../../components/Dialog';
-import { colors, radius, spacing } from '../../theme';
+import { radius, spacing } from '../../theme';
+import { useColors } from '../../context/ThemeContext';
+import type { Colors } from '../../theme';
 import type { Exam } from '../../api/types';
 import type { CompositeScreenProps } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
@@ -26,6 +28,8 @@ type Props = CompositeScreenProps<
 >;
 
 export default function TeacherExamsScreen({ navigation }: Props) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const dialog = useDialog();
   const [exams, setExams] = useState<Exam[]>([]);
   const [loading, setLoading] = useState(true);
@@ -200,7 +204,8 @@ export default function TeacherExamsScreen({ navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
