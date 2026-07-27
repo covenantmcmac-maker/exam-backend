@@ -8,7 +8,7 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://192.168.1.100:5000"
+        "EXPO_PUBLIC_API_URL": "https://exam-backend-1-gbh3.onrender.com"
       }
     },
     "preview": {
@@ -17,7 +17,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://your-api-host.example.com"
+        "EXPO_PUBLIC_API_URL": "https://exam-backend-1-gbh3.onrender.com"
       }
     },
     "production": {
@@ -26,7 +26,7 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://your-api-host.example.com"
+        "EXPO_PUBLIC_API_URL": "https://exam-backend-1-gbh3.onrender.com"
       }
     }
   },

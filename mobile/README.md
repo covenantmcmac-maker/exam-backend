@@ -30,28 +30,45 @@ npm run android    # Android emulator / device
 npm run ios        # iOS simulator (macOS only)
 ```
 
-### Choosing the API URL
+### The API URL is already configured
 
-The app reads `EXPO_PUBLIC_API_URL`. This matters more than it looks — on a
-phone, `localhost` means *the phone itself*, not your computer.
+The app ships pointing at the live backend:
+
+```
+https://exam-backend-1-gbh3.onrender.com
+```
+
+That's the same API the existing web app uses, so a fresh clone works with no
+setup. Nothing to fill in.
+
+To point somewhere else, set `EXPO_PUBLIC_API_URL` (see `.env.example`). On a
+phone, `localhost` means *the phone itself*, not your computer:
 
 | Where you run it | Value |
 | --- | --- |
 | Browser / iOS simulator | `http://localhost:5000` |
 | Android emulator | `http://10.0.2.2:5000` |
 | Physical phone (same Wi-Fi) | `http://192.168.x.x:5000` |
-| Production | `https://your-api-host.com` |
 
-Start the backend first, from the repository root:
+Do **not** include a trailing `/api` — the endpoint helpers add it.
 
-```bash
-npm install && npm run dev     # http://localhost:5000
+### ⚠️ CORS: add your domain before deploying the web build
+
+`server.js` only allows these origins:
+
+```js
+origin: ['http://localhost:3000', 'https://macmultimediaexams.netlify.app']
 ```
 
-The backend's CORS allowlist in `server.js` currently permits
-`http://localhost:3000` and the Netlify site. Native apps don't send an
-`Origin` header so they are unaffected, but if you host the **web** build on a
-new domain, add it to that list.
+**Native Android/iOS builds are unaffected** — they don't send an `Origin`
+header. But any *browser* origin not on that list is blocked, including:
+
+- `http://localhost:8081` — the Expo web dev server
+- Whatever domain you deploy the PWA to, if it isn't the Netlify site above
+
+So either deploy the PWA to the existing Netlify domain (nothing to change), or
+add the new origin to that array and redeploy the backend. For local web
+development, add `http://localhost:8081` too.
 
 ---
 
@@ -133,7 +150,7 @@ Without the first, browsers can pin an old service worker and users stop receivi
 
 ### Replacing the existing site
 
-The PWA is a drop-in replacement for the current React site: same API, same accounts. Point your Netlify site at `dist/` and everyone gets the installable version at the URL they already use. Add that domain to the CORS allowlist in `server.js` if it changes.
+The PWA is a drop-in replacement for the current React site: it already talks to the same API (`exam-backend-1-gbh3.onrender.com`) with the same accounts. Point your existing Netlify site at `dist/` and everyone gets the installable version at the URL they already use — and because the domain doesn't change, CORS keeps working untouched.
 
 ---
 
@@ -255,8 +272,7 @@ eas login
 eas build:configure
 ```
 
-Set the real API URL in `eas.json` (replace `your-api-host.example.com` in the
-`preview` and `production` profiles), then:
+`eas.json` is already pointed at the live API, so you can build straight away:
 
 ```bash
 # Installable APK for testing / sharing directly
@@ -279,11 +295,13 @@ npm run build:web        # outputs to dist/
 
 ### Before you ship
 
-- Replace the generated icons in `assets/` (native) and `public/icons/` (PWA)
-  with real branding. `scripts/` has no icon generator — they were produced
-  once and committed.
+- **Add your domain to the CORS allowlist** in `server.js` unless you're
+  deploying to the existing Netlify site (see the CORS note above). This is the
+  single most likely thing to break a fresh deploy.
 - Serve the PWA over **HTTPS**, or install prompts and the service worker
   won't work at all.
-- Point `eas.json` at your production API over HTTPS too. Android blocks
-  cleartext HTTP by default, so a plain `http://` host will fail on device.
-- Add your deployed domain to the CORS allowlist in `server.js`.
+- Replace the generated icons in `assets/` (native) and `public/icons/` (PWA)
+  with real branding.
+- The API runs on Render's free tier, which sleeps when idle — the first
+  request after a quiet spell can take ~30s to wake. The app shows a loading
+  state rather than failing, but it's worth knowing before a live exam.

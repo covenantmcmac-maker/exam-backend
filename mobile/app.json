@@ -34,7 +34,7 @@
       "bundler": "metro"
     },
     "extra": {
-      "apiUrl": "http://localhost:5000",
+      "apiUrl": "https://exam-backend-1-gbh3.onrender.com",
       "eas": {}
     }
   }

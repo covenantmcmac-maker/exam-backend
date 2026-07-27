@@ -143,6 +143,34 @@ if (has('service-worker.js')) {
   }
 }
 
+/* ------------------------------------------------------------ API wiring */
+
+section('API configuration');
+
+const bundleName = (read('index.html').match(/src="([^"]*_expo[^"]*\.js)"/) || [])[1];
+check('bundle referenced from index.html', !!bundleName);
+
+if (bundleName) {
+  const bundle = read(bundleName.replace(/^\//, ''));
+  const urls = [...bundle.matchAll(/https?:\/\/[a-z0-9.\-]+(?::\d+)?(?=\/api|["'`])/gi)]
+    .map((m) => m[0]);
+  const apiHosts = [...new Set(urls.filter((u) => /onrender|localhost|127\.0\.0\.1/.test(u)))];
+
+  check('an API base URL is compiled in', apiHosts.length > 0, apiHosts.join(', '));
+  check(
+    'API base URL has no trailing /api (endpoints add it)',
+    !/onrender\.com\/api["'`]/.test(bundle)
+  );
+  check(
+    'production build points at a real host, not localhost',
+    process.env.EXPO_PUBLIC_API_URL
+      ? true
+      : !apiHosts.some((h) => /localhost|127\.0\.0\.1/.test(h)),
+    apiHosts.join(', ')
+  );
+  check('API is served over HTTPS', apiHosts.some((h) => h.startsWith('https://')), apiHosts.join(', '));
+}
+
 /* --------------------------------------------------------- host config */
 
 section('Hosting');
