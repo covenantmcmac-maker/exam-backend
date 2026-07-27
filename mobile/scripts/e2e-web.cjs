@@ -85,6 +85,31 @@ function createApp() {
     window,
     doc,
     errors,
+    /**
+     * Poll until `predicate` holds, instead of guessing with fixed sleeps.
+     * The first jsdom instance has to JIT the whole bundle, so cold starts
+     * are much slower than subsequent ones.
+     */
+    async waitFor(predicate, { timeout = 15000, interval = 100 } = {}) {
+      const deadline = Date.now() + timeout;
+      for (;;) {
+        try {
+          if (predicate()) return true;
+        } catch {
+          /* keep polling */
+        }
+        if (Date.now() >= deadline) return false;
+        await sleep(interval);
+      }
+    },
+    /** Wait for a regex to appear in the app tree. */
+    async waitForText(re, opts) {
+      return api.waitFor(() => re.test(api.rootText()), opts);
+    },
+    /** Wait for a regex to appear in the dialog portal. */
+    async waitForDialog(re, opts) {
+      return api.waitFor(() => re.test(api.dialogText()), opts);
+    },
     close: () => window.close(),
     /** Whole-document text. Modals render in a portal outside #root. */
     text: () => doc.body.textContent.replace(/\s+/g, ' ').trim(),
@@ -146,15 +171,14 @@ async function serverCalls() {
 async function studentJourney() {
   journey('Student: login → dashboard → results');
   const app = createApp();
-  await sleep(2500);
 
-  step('login screen renders', /Sign in to continue/.test(app.text()));
+  step('login screen renders', await app.waitForText(/Sign in to continue/));
 
   const ins = app.inputs();
   app.setInput(ins[0], 'student@example.com');
   app.setInput(ins[1], 'secret');
   app.click('Log in');
-  await sleep(2500);
+  await app.waitForText(/Hi, Sam/);
 
   const home = app.rootText();
   step('signed in as student', /Hi, Sam/.test(home), home.slice(0, 70));
@@ -163,20 +187,17 @@ async function studentJourney() {
   step('recent results loaded from API', /Sample Quiz/.test(home));
 
   app.click('Results');
-  await sleep(1500);
-  step('results tab shows history', /My results|2\/2 points/.test(app.rootText()));
+  step('results tab shows history', await app.waitForText(/My results/));
 
   app.click('Profile');
-  await sleep(1200);
+  await app.waitForText(/Sam Student/);
   const prof = app.rootText();
   step('profile shows user + role', /Sam Student/.test(prof) && /STUDENT/.test(prof));
 
   app.click('Log out');
-  await sleep(800);
-  step('logout confirmation dialog opens', /Log out/.test(app.dialogText()), app.dialogText());
+  step('logout confirmation dialog opens', await app.waitForDialog(/Log out/), app.dialogText());
   app.clickDialog('Log out');
-  await sleep(1500);
-  step('returned to login screen', /Sign in to continue/.test(app.rootText()));
+  step('returned to login screen', await app.waitForText(/Sign in to continue/));
 
   step('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
   app.close();
@@ -185,13 +206,13 @@ async function studentJourney() {
 async function teacherJourney() {
   journey('Teacher: login → dashboard → exams → questions');
   const app = createApp();
-  await sleep(2500);
+  await app.waitForText(/Sign in to continue/);
 
   const ins = app.inputs();
   app.setInput(ins[0], 'teacher@example.com');
   app.setInput(ins[1], 'secret');
   app.click('Log in');
-  await sleep(2500);
+  await app.waitForText(/Hi, Ada/);
 
   const dash = app.rootText();
   step('teacher dashboard loaded', /Hi, Ada/.test(dash), dash.slice(0, 70));
@@ -199,25 +220,26 @@ async function teacherJourney() {
   step('quick actions present', /New exam/.test(dash));
 
   app.click('Exams');
-  await sleep(1800);
+  await app.waitForText(/My exams/);
   const exams = app.rootText();
   step('exams tab lists exam', /My exams/.test(exams), exams.slice(0, 70));
   step('access code card rendered', /ACCESS CODE/.test(exams) && /ABCD1234/.test(exams));
   step('publish state shown', /Live|Draft/.test(exams));
 
   app.click('Questions');
-  await sleep(1800);
+  await app.waitForText(/What is 2 \+ 2/);
   const qs = app.rootText();
   step('question bank loaded', /What is 2 \+ 2/.test(qs), qs.slice(0, 70));
   step('correct option marked', /4 ✓/.test(qs) || /4/.test(qs));
 
   // Deleting a question must go through the new dialog.
   app.click('Delete');
-  await sleep(800);
-  step('delete confirmation dialog opens', /Delete question\?/.test(app.dialogText()));
+  step('delete confirmation dialog opens', await app.waitForDialog(/Delete question\?/));
   app.clickDialog('Cancel');
-  await sleep(600);
-  step('cancel dismisses dialog', !/Delete question\?/.test(app.dialogText()));
+  step(
+    'cancel dismisses dialog',
+    await app.waitFor(() => !/Delete question\?/.test(app.dialogText()))
+  );
 
   step('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
   app.close();
@@ -226,19 +248,18 @@ async function teacherJourney() {
 async function examJourney() {
   journey('Guest: access code → exam → answer → submit → result');
   const app = createApp();
-  await sleep(2500);
+  await app.waitForText(/Sign in to continue/);
 
   app.click('Join an exam with a code');
-  await sleep(1200);
-  step('guest join screen opened', /Join an exam/.test(app.rootText()));
+  step('guest join screen opened', await app.waitForText(/Join an exam/));
 
   const codeInput = app.inputs().find((i) => /A1B2C3D4/.test(i.placeholder || ''));
   app.setInput(codeInput, 'ABCD1234');
   app.click('Find exam');
-  await sleep(2000);
+  const previewOk = await app.waitForText(/Sample Quiz/);
 
   const preview = app.rootText();
-  step('exam preview fetched', /Sample Quiz/.test(preview));
+  step('exam preview fetched', previewOk);
   step('preview shows duration and marks', /30 min/.test(preview) && /2 marks/.test(preview));
 
   // The login screen stays mounted below, so anchor on the name field's index.
@@ -250,27 +271,27 @@ async function examJourney() {
     'guest@example.com'
   );
   app.click('Start exam');
-  await sleep(3000);
+  const examOk = await app.waitForText(/What is 2 \+ 2/);
 
   const exam = app.rootText();
-  step('exam screen rendered', /What is 2 \+ 2/.test(exam), exam.slice(-90));
+  step('exam screen rendered', examOk, exam.slice(-90));
   step('countdown timer running', /\d\d:\d\d/.test(exam));
   step('options rendered', /A3/.test(exam) && /B4/.test(exam) && /C5/.test(exam));
   step('progress indicator', /Question 1 of 1/.test(exam));
 
   step('answer option selected', app.click('4'));
-  await sleep(800);
+  await app.waitForText(/1 answered/);
 
   app.click('Submit');
-  await sleep(1000);
+  const dlgOk = await app.waitForDialog(/Submit exam\?/);
   const dlg = app.dialogText();
-  step('submit confirmation dialog shown', /Submit exam\?/.test(dlg), dlg || '(no dialog)');
+  step('submit confirmation dialog shown', dlgOk, dlg || '(no dialog)');
   step('dialog reports answered state', /All questions answered/.test(dlg));
 
   app.clickDialog('Submit');
-  await sleep(2500);
+  const resultOk = await app.waitForText(/You passed/);
   const result = app.rootText();
-  step('result screen reached', /You passed/.test(result), result.slice(-110));
+  step('result screen reached', resultOk, result.slice(-110));
   step('score breakdown shown', /2 \/ 2 points/.test(result));
   step('percentage shown', /100/.test(result));
 
