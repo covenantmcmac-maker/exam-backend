@@ -67,9 +67,13 @@ in:
 | Build command | `npm run build:pwa` |
 | Publish directory | `mobile/dist` |
 
-**Leave them as they are.** If any field is empty, type the value above. If a
-field shows something different (left over from the old site), correct it to
-match.
+**Check all three, even if they look pre-filled.** Values left over from your
+old React site will silently override what you expect and produce a
+"Page not found".
+
+> **Watch the publish path.** Netlify resolves it from the **repo root**, not
+> from the base directory — so it must be `mobile/dist`, not `dist`. This one
+> catches almost everyone.
 
 ### Step 4 — Deploy
 
@@ -115,6 +119,62 @@ Chrome on desktop → **F12** → **Application** tab:
 
 And the **Console** tab will show a clear CORS error if that's ever the problem
 (it shouldn't be, on this domain).
+
+---
+
+---
+
+## Troubleshooting: "Page not found" after deploying
+
+This is the most common failure, and it's almost always **one of three
+settings**. The build usually *succeeds* — Netlify just published a folder that
+has no `index.html` in it.
+
+Go to **Site configuration → Build & deploy → Build settings** and check all
+three:
+
+| Field | Must be | Common wrong value |
+| --- | --- | --- |
+| **Base directory** | `mobile` | *(blank)* or `/` |
+| **Build command** | `npm run build:pwa` | `npm run build` |
+| **Publish directory** | `mobile/dist` | `dist`, `build`, *(blank)* |
+
+> **The `mobile/dist` gotcha:** Netlify resolves *publish* from the **repo
+> root**, not from the base directory. So it must be `mobile/dist`, not `dist`,
+> even though the base is `mobile`.
+
+Then check the **branch**:
+
+**Site configuration → Build & deploy → Continuous deployment → Branch to
+deploy** must be a branch that actually contains `netlify.toml` and `mobile/`.
+Both `main` and `arena/019fa38e-exam-backend` now do.
+
+> If you deployed **`main` before the PWA was merged into it**, that's your
+> cause: `main` was backend-only, so there was nothing to publish. It's merged
+> now — just **Trigger deploy** again.
+
+You can verify a branch is deployable before touching Netlify:
+
+```bash
+cd mobile
+npm run check:deploy https://macmultimediaexams.netlify.app
+```
+
+It fails loudly if a branch is missing the build config.
+
+### Read the deploy log
+
+**Deploys** → click the most recent one. A healthy log contains:
+
+```
+Web Bundled … index.ts (548 modules)
+✓ PWA ready in dist
+Site is live ✨
+```
+
+If you *don't* see `PWA ready`, the build didn't run — nearly always a wrong
+base directory or build command. If you *do* see it but still get a 404, the
+publish directory is wrong.
 
 ---
 

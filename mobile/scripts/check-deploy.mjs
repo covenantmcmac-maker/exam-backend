@@ -158,6 +158,69 @@ existsSync(path.join(mobileRoot, 'package-lock.json'))
   ? ok('package-lock.json committed (npm ci will work)')
   : warn('No package-lock.json — builds may not be reproducible');
 
+/* ------------------------------------------------- deployable branch */
+
+section('Deployable branch');
+
+// The #1 cause of a post-deploy 404: Netlify builds a branch that has no
+// netlify.toml and no mobile/, so it publishes a directory with no
+// index.html. Check every branch a user might plausibly pick.
+import { execSync } from 'node:child_process';
+
+function branchHas(branch, file) {
+  try {
+    execSync(`git cat-file -e ${branch}:${file}`, { cwd: repoRoot, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function branchExists(branch) {
+  try {
+    execSync(`git rev-parse --verify ${branch}`, { cwd: repoRoot, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let currentBranch = '';
+try {
+  currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoRoot })
+    .toString()
+    .trim();
+} catch {
+  /* not a git checkout */
+}
+
+const candidates = [...new Set([currentBranch, 'main', 'origin/main'].filter(Boolean))];
+let anyDeployable = false;
+
+for (const b of candidates) {
+  if (!branchExists(b)) continue;
+  const hasToml = branchHas(b, 'netlify.toml');
+  const hasApp = branchHas(b, 'mobile/package.json');
+
+  if (hasToml && hasApp) {
+    ok(`${b} is deployable (netlify.toml + mobile/)`);
+    anyDeployable = true;
+  } else {
+    const missing = [!hasToml && 'netlify.toml', !hasApp && 'mobile/']
+      .filter(Boolean)
+      .join(' and ');
+    bad(`${b} is NOT deployable — missing ${missing}`);
+    console.log(`     Deploying ${b} publishes a folder with no index.html,`);
+    console.log('     which is exactly what produces Netlify\'s "Page not found".');
+    console.log(`     Fix: merge this work into ${b}, or point Netlify at a branch that has it.`);
+  }
+}
+
+if (!anyDeployable && candidates.length) {
+  console.log('');
+  console.log('     No checked branch can be deployed as-is.');
+}
+
 /* ------------------------------------------------------------- report */
 
 console.log('');
