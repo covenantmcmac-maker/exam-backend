@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   Pressable,
@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, Field, Loading } from '../../components/ui';
 import { questionsApi } from '../../api/endpoints';
@@ -21,6 +22,19 @@ import type { CompositeScreenProps } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList, TeacherTabParamList } from '../../navigation/types';
+import {
+  SORT_OPTIONS,
+  SORT_SHORT_LABELS,
+  SORT_STORAGE_KEY,
+  SUBJECT_ORDER_OPTIONS,
+  SUBJECT_ORDER_SHORT_LABELS,
+  SUBJECT_ORDER_STORAGE_KEY,
+  isSortKey,
+  isSubjectOrderKey,
+  relativeTime,
+  summarizeSubjects,
+} from './questionSort';
+import type { SortKey, SubjectOrderKey } from './questionSort';
 
 type Props = CompositeScreenProps<
   BottomTabScreenProps<TeacherTabParamList, 'Questions'>,
@@ -41,17 +55,37 @@ export default function QuestionBankScreen({ navigation }: Props) {
   const [subject, setSubject] = useState<string>('all');
   const [selectMode, setSelectMode] = useState(false);
   const [picked, setPicked] = useState<Record<string, true>>({});
+  const [sort, setSort] = useState<SortKey>('newest');
+  const [subjectOrder, setSubjectOrder] = useState<SubjectOrderKey>('alpha');
+
+  // Restore the persisted sort preferences once, on mount.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      AsyncStorage.getItem(SORT_STORAGE_KEY),
+      AsyncStorage.getItem(SUBJECT_ORDER_STORAGE_KEY),
+    ])
+      .then(([savedSort, savedOrder]) => {
+        if (cancelled) return;
+        if (isSortKey(savedSort)) setSort(savedSort);
+        if (isSubjectOrderKey(savedOrder)) setSubjectOrder(savedOrder);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
-      const res = await questionsApi.list();
+      const res = await questionsApi.list({ sort });
       setQuestions(res.questions);
     } catch (e) {
       void dialog.notify('Error', e instanceof Error ? e.message : 'Could not load questions.');
     } finally {
       setLoading(false);
     }
-  }, [dialog]);
+  }, [dialog, sort]);
 
   useFocusEffect(
     useCallback(() => {
@@ -66,17 +100,10 @@ export default function QuestionBankScreen({ navigation }: Props) {
   };
 
   /** Distinct subjects among the loaded questions, with counts. */
-  const subjects = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const q of questions) {
-      const s = (q.subject || '').trim();
-      if (!s) continue;
-      counts.set(s, (counts.get(s) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([name, count]) => ({ name, count }));
-  }, [questions]);
+  const subjects = useMemo(
+    () => summarizeSubjects(questions, subjectOrder),
+    [questions, subjectOrder]
+  );
 
   // If questions are reloaded and the active subject disappears, fall back to all.
   const effectiveSubject =
@@ -95,6 +122,36 @@ export default function QuestionBankScreen({ navigation }: Props) {
       return matchesTerm && matchesFilter && matchesSubject;
     });
   }, [questions, search, filter, effectiveSubject]);
+
+  /** Open the sort chooser, marking the active option with a check. */
+  const chooseSort = async () => {
+    const next = await dialog.choose<SortKey>(
+      'Sort questions',
+      'All orders fall back to upload time.',
+      SORT_OPTIONS.map((o) => ({
+        label: `${o.key === sort ? '\u2713 ' : ''}${o.label}`,
+        value: o.key,
+      }))
+    );
+    if (!next || next === sort) return;
+    setSort(next);
+    AsyncStorage.setItem(SORT_STORAGE_KEY, next).catch(() => {});
+  };
+
+  /** Open the subject-chip ordering chooser. */
+  const chooseSubjectOrder = async () => {
+    const next = await dialog.choose<SubjectOrderKey>(
+      'Order subjects',
+      undefined,
+      SUBJECT_ORDER_OPTIONS.map((o) => ({
+        label: `${o.key === subjectOrder ? '\u2713 ' : ''}${o.label}`,
+        value: o.key,
+      }))
+    );
+    if (!next || next === subjectOrder) return;
+    setSubjectOrder(next);
+    AsyncStorage.setItem(SUBJECT_ORDER_STORAGE_KEY, next).catch(() => {});
+  };
 
   const pickedIds = Object.keys(picked);
 
@@ -191,36 +248,50 @@ export default function QuestionBankScreen({ navigation }: Props) {
           style={styles.search}
         />
         {subjects.length > 0 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.subjectRow}
-          >
-            <Pressable
-              onPress={() => setSubject('all')}
-              style={[styles.chip, effectiveSubject === 'all' && styles.chipActive]}
-            >
-              <Text
-                style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
+          <>
+            <View style={styles.subjectHeader}>
+              <Text style={styles.subjectLabel}>Subjects</Text>
+              <Pressable
+                onPress={chooseSubjectOrder}
+                style={styles.sortPill}
+                accessibilityRole="button"
               >
-                all subjects ({questions.length})
-              </Text>
-            </Pressable>
-            {subjects.map((s) => {
-              const active = effectiveSubject === s.name;
-              return (
-                <Pressable
-                  key={s.name}
-                  onPress={() => setSubject(s.name)}
-                  style={[styles.chip, active && styles.chipActive]}
+                <Text style={styles.sortPillText}>
+                  {SUBJECT_ORDER_SHORT_LABELS[subjectOrder]} ▾
+                </Text>
+              </Pressable>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.subjectRow}
+            >
+              <Pressable
+                onPress={() => setSubject('all')}
+                style={[styles.chip, effectiveSubject === 'all' && styles.chipActive]}
+              >
+                <Text
+                  style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
                 >
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                    {s.name} ({s.count})
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+                  all subjects ({questions.length})
+                </Text>
+              </Pressable>
+              {subjects.map((s) => {
+                const active = effectiveSubject === s.name;
+                return (
+                  <Pressable
+                    key={s.name}
+                    onPress={() => setSubject(s.name)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {s.name} ({s.count})
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </>
         )}
         <View style={styles.filterRow}>
           {FILTERS.map((f) => {
@@ -236,9 +307,14 @@ export default function QuestionBankScreen({ navigation }: Props) {
             );
           })}
         </View>
-        <Text style={styles.showing}>
-          Showing {visible.length} of {questions.length}
-        </Text>
+        <View style={styles.showingRow}>
+          <Text style={styles.showing}>
+            Showing {visible.length} of {questions.length}
+          </Text>
+          <Pressable onPress={chooseSort} style={styles.sortPill} accessibilityRole="button">
+            <Text style={styles.sortPillText}>Sort: {SORT_SHORT_LABELS[sort]} ▾</Text>
+          </Pressable>
+        </View>
       </View>
 
       <FlatList
@@ -267,6 +343,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
         }
         renderItem={({ item }) => {
           const isPicked = !!picked[item._id];
+          const uploaded = relativeTime(item.createdAt);
           return (
             <Pressable
               onPress={() =>
@@ -320,6 +397,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
                   <Text style={styles.meta}>· {item.points} pt</Text>
                   <Text style={styles.meta}>· {item.questionType.replace('-', ' ')}</Text>
                   {!!item.subject && <Text style={styles.meta}>· {item.subject}</Text>}
+                  {!!uploaded && <Text style={styles.meta}>· {uploaded}</Text>}
                 </View>
 
                 {!selectMode && (
@@ -367,7 +445,37 @@ const makeStyles = (colors: Colors) =>
     search: { marginBottom: 0 },
     subjectRow: { gap: spacing.sm, marginTop: spacing.md },
     filterRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.md },
-    showing: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
+    showing: { fontSize: 12, color: colors.textMuted },
+    showingRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: spacing.sm,
+      gap: spacing.md,
+    },
+    subjectHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginTop: spacing.md,
+      gap: spacing.md,
+    },
+    subjectLabel: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.textMuted,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    sortPill: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: 4,
+      borderRadius: radius.pill,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.card,
+    },
+    sortPillText: { fontSize: 12, color: colors.text, fontWeight: '600' },
     chip: {
       paddingHorizontal: spacing.md,
       paddingVertical: 6,

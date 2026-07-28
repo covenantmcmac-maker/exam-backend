@@ -26,6 +26,13 @@ const student = {
   role: 'student',
 };
 
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+const now = Date.now();
+
+/** Upload timestamps are staggered so sort-by-date has something to order. */
+const ago = (ms) => new Date(now - ms).toISOString();
+
 const question = {
   _id: 'q1',
   questionText: 'What is 2 + 2?',
@@ -38,7 +45,98 @@ const question = {
   points: 2,
   difficulty: 'easy',
   subject: 'Maths',
+  createdAt: ago(HOUR),
 };
+
+const question2 = {
+  _id: 'q2',
+  questionText: 'Define photosynthesis.',
+  questionType: 'short-answer',
+  options: [],
+  correctAnswer: 'Converting light into chemical energy',
+  points: 5,
+  difficulty: 'hard',
+  subject: 'Biology',
+  createdAt: ago(2 * DAY),
+};
+
+const question3 = {
+  _id: 'q3',
+  questionText: 'Alexander the Great was tutored by Aristotle.',
+  questionType: 'true-false',
+  options: [
+    { _id: 'o4', text: 'True', isCorrect: true },
+    { _id: 'o5', text: 'False', isCorrect: false },
+  ],
+  points: 3,
+  difficulty: 'medium',
+  subject: 'History',
+  createdAt: ago(7 * DAY),
+};
+
+/** Served newest-first by default, mirroring the real API's default ordering. */
+const questions = [question, question2, question3];
+
+const SORT_KEYS = new Set([
+  'newest',
+  'oldest',
+  'alpha',
+  'alphaDesc',
+  'difficultyAsc',
+  'difficultyDesc',
+  'pointsDesc',
+  'pointsAsc',
+  'subject',
+]);
+
+const DIFFICULTY_RANK = { easy: 0, medium: 1, hard: 2 };
+const uploadedAt = (q) => Date.parse(q.createdAt || '') || 0;
+const textCompare = (a, b) =>
+  String(a || '').trim().localeCompare(String(b || '').trim(), 'en', { sensitivity: 'base' });
+const byNewest = (a, b) => uploadedAt(b) - uploadedAt(a);
+
+function appliedSort(searchParams) {
+  const requested = searchParams.get('sort');
+  return SORT_KEYS.has(requested) ? requested : 'newest';
+}
+
+function sortQuestionsForApi(sort) {
+  const sorted = [...questions];
+  sorted.sort((a, b) => {
+    let primary = 0;
+    switch (sort) {
+      case 'oldest':
+        primary = uploadedAt(a) - uploadedAt(b);
+        break;
+      case 'alpha':
+        primary = textCompare(a.questionText, b.questionText);
+        break;
+      case 'alphaDesc':
+        primary = textCompare(b.questionText, a.questionText);
+        break;
+      case 'difficultyAsc':
+        primary = (DIFFICULTY_RANK[a.difficulty] ?? 99) - (DIFFICULTY_RANK[b.difficulty] ?? 99);
+        break;
+      case 'difficultyDesc':
+        primary = (DIFFICULTY_RANK[b.difficulty] ?? -1) - (DIFFICULTY_RANK[a.difficulty] ?? -1);
+        break;
+      case 'pointsDesc':
+        primary = (b.points ?? 0) - (a.points ?? 0);
+        break;
+      case 'pointsAsc':
+        primary = (a.points ?? 0) - (b.points ?? 0);
+        break;
+      case 'subject':
+        primary = textCompare(a.subject, b.subject);
+        break;
+      case 'newest':
+      default:
+        primary = byNewest(a, b);
+    }
+    return primary || byNewest(a, b);
+  });
+  return sorted;
+}
 
 const exam = {
   _id: 'e1',
@@ -88,7 +186,9 @@ const server = http.createServer((req, res) => {
   let raw = '';
   req.on('data', (c) => (raw += c));
   req.on('end', () => {
-    const url = req.url.split('?')[0];
+    const parsedUrl = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    const url = parsedUrl.pathname;
+    const query = Object.fromEntries(parsedUrl.searchParams.entries());
     const key = `${req.method} ${url}`;
     const authed = (req.headers.authorization || '').startsWith('Bearer ');
     let body = {};
@@ -97,7 +197,7 @@ const server = http.createServer((req, res) => {
     } catch {
       body = {};
     }
-    calls.push({ key, authed, body });
+    calls.push({ key, authed, query, body });
 
     // Routes that require a token.
     const needsAuth = [
@@ -216,11 +316,18 @@ const server = http.createServer((req, res) => {
           { ...attempt, status: 'completed', score: 2, percentage: 100, timeSpent: 42 },
         ]);
 
-      case 'GET /api/questions':
-        return send(res, 200, { questions: [question], total: 1, pages: 1 });
+      case 'GET /api/questions': {
+        const sort = appliedSort(parsedUrl.searchParams);
+        return send(res, 200, {
+          questions: sortQuestionsForApi(sort),
+          total: questions.length,
+          pages: 1,
+          sort,
+        });
+      }
 
       case 'POST /api/questions':
-        return send(res, 201, { ...question, _id: 'q2' });
+        return send(res, 201, { ...question, _id: 'q4' });
 
       case 'POST /api/questions/bulk-upload':
         // Multipart body — the mock just pretends three questions landed.
@@ -242,7 +349,7 @@ const server = http.createServer((req, res) => {
           totalStudents: 1,
           totalAdmins: 1,
           totalExams: 1,
-          totalQuestions: 1,
+          totalQuestions: 3,
           totalAttempts: 1,
           completedAttempts: 1,
         });
