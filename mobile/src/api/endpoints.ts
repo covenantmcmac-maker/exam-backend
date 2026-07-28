@@ -95,16 +95,42 @@ export const examsApi = {
 
 /* ------------------------------------------------------------- questions */
 
+type QuestionListSort =
+  | 'newest'
+  | 'oldest'
+  | 'alpha'
+  | 'alphaDesc'
+  | 'difficultyAsc'
+  | 'difficultyDesc'
+  | 'pointsDesc'
+  | 'pointsAsc'
+  | 'subject'
+  | 'subjectDesc';
+
+type QuestionListParams = {
+  subject?: string;
+  difficulty?: string;
+  type?: string;
+  page?: number;
+  limit?: number;
+  sort?: QuestionListSort;
+};
+
+type QuestionListResponse = {
+  questions: Question[];
+  total: number;
+  pages: number;
+  sort?: QuestionListSort;
+};
+
 export const questionsApi = {
-  list: (params: { subject?: string; difficulty?: string; type?: string } = {}) => {
+  list: (params: QuestionListParams = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
-      if (v) qs.append(k, v);
+      if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
     });
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    return request<{ questions: Question[]; total: number; pages: number }>(
-      `/api/questions${suffix}`
-    );
+    return request<QuestionListResponse>(`/api/questions${suffix}`);
   },
 
   create: (payload: Partial<Question>) =>

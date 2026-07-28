@@ -18,9 +18,10 @@ export type SortKey =
   | 'difficultyDesc'
   | 'pointsDesc'
   | 'pointsAsc'
-  | 'subject';
+  | 'subject'
+  | 'subjectDesc';
 
-export type SubjectOrderKey = 'alpha' | 'count' | 'recent';
+export type SubjectOrderKey = 'alpha' | 'alphaDesc' | 'count' | 'countAsc' | 'recent' | 'oldest';
 
 export const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: 'newest', label: 'Newest first' },
@@ -31,7 +32,8 @@ export const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: 'difficultyDesc', label: 'Difficulty hard→easy' },
   { key: 'pointsDesc', label: 'Points high→low' },
   { key: 'pointsAsc', label: 'Points low→high' },
-  { key: 'subject', label: 'Subject A→Z' },
+  { key: 'subject', label: 'Course A→Z' },
+  { key: 'subjectDesc', label: 'Course Z→A' },
 ];
 
 /** Short label shown on the sort pill itself. */
@@ -44,19 +46,26 @@ export const SORT_SHORT_LABELS: Record<SortKey, string> = {
   difficultyDesc: 'Hard→Easy',
   pointsDesc: 'Points ↓',
   pointsAsc: 'Points ↑',
-  subject: 'Subject',
+  subject: 'Course A→Z',
+  subjectDesc: 'Course Z→A',
 };
 
 export const SUBJECT_ORDER_OPTIONS: { key: SubjectOrderKey; label: string }[] = [
-  { key: 'alpha', label: 'A–Z' },
-  { key: 'count', label: 'By count (most questions first)' },
-  { key: 'recent', label: 'Most recent upload first' },
+  { key: 'alpha', label: 'Course A–Z' },
+  { key: 'alphaDesc', label: 'Course Z–A' },
+  { key: 'count', label: 'Most questions first' },
+  { key: 'countAsc', label: 'Fewest questions first' },
+  { key: 'recent', label: 'Newest question first' },
+  { key: 'oldest', label: 'Oldest question first' },
 ];
 
 export const SUBJECT_ORDER_SHORT_LABELS: Record<SubjectOrderKey, string> = {
   alpha: 'A–Z',
-  count: 'By count',
-  recent: 'Recent',
+  alphaDesc: 'Z–A',
+  count: 'Most',
+  countAsc: 'Fewest',
+  recent: 'Newest',
+  oldest: 'Oldest',
 };
 
 export function isSortKey(v: unknown): v is SortKey {
@@ -95,6 +104,7 @@ const COMPARATORS: Record<SortKey, (a: Question, b: Question) => number> = {
   pointsDesc: (a, b) => (b.points ?? 0) - (a.points ?? 0),
   pointsAsc: (a, b) => (a.points ?? 0) - (b.points ?? 0),
   subject: (a, b) => subjectOf(a).localeCompare(subjectOf(b)),
+  subjectDesc: (a, b) => subjectOf(b).localeCompare(subjectOf(a)),
 };
 
 /**
@@ -133,11 +143,17 @@ export function summarizeSubjects(
 
   const list = [...map.values()];
   switch (order) {
+    case 'alphaDesc':
+      return list.sort((a, b) => b.name.localeCompare(a.name));
     case 'count':
       // Most questions first, alphabetical within a tie.
       return list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    case 'countAsc':
+      return list.sort((a, b) => a.count - b.count || a.name.localeCompare(b.name));
     case 'recent':
       return list.sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
+    case 'oldest':
+      return list.sort((a, b) => a.latest - b.latest || a.name.localeCompare(b.name));
     case 'alpha':
     default:
       return list.sort((a, b) => a.name.localeCompare(b.name));

@@ -74,8 +74,73 @@ const question3 = {
   createdAt: ago(7 * DAY),
 };
 
-/** Served newest-first, mirroring the real API's default ordering. */
+/** Served newest-first by default, mirroring the real API's default ordering. */
 const questions = [question, question2, question3];
+
+const SORT_KEYS = new Set([
+  'newest',
+  'oldest',
+  'alpha',
+  'alphaDesc',
+  'difficultyAsc',
+  'difficultyDesc',
+  'pointsDesc',
+  'pointsAsc',
+  'subject',
+  'subjectDesc',
+]);
+
+const DIFFICULTY_RANK = { easy: 0, medium: 1, hard: 2 };
+const uploadedAt = (q) => Date.parse(q.createdAt || '') || 0;
+const textCompare = (a, b) =>
+  String(a || '').trim().localeCompare(String(b || '').trim(), 'en', { sensitivity: 'base' });
+const byNewest = (a, b) => uploadedAt(b) - uploadedAt(a);
+
+function appliedSort(searchParams) {
+  const requested = searchParams.get('sort');
+  return SORT_KEYS.has(requested) ? requested : 'newest';
+}
+
+function sortQuestionsForApi(sort) {
+  const sorted = [...questions];
+  sorted.sort((a, b) => {
+    let primary = 0;
+    switch (sort) {
+      case 'oldest':
+        primary = uploadedAt(a) - uploadedAt(b);
+        break;
+      case 'alpha':
+        primary = textCompare(a.questionText, b.questionText);
+        break;
+      case 'alphaDesc':
+        primary = textCompare(b.questionText, a.questionText);
+        break;
+      case 'difficultyAsc':
+        primary = (DIFFICULTY_RANK[a.difficulty] ?? 99) - (DIFFICULTY_RANK[b.difficulty] ?? 99);
+        break;
+      case 'difficultyDesc':
+        primary = (DIFFICULTY_RANK[b.difficulty] ?? -1) - (DIFFICULTY_RANK[a.difficulty] ?? -1);
+        break;
+      case 'pointsDesc':
+        primary = (b.points ?? 0) - (a.points ?? 0);
+        break;
+      case 'pointsAsc':
+        primary = (a.points ?? 0) - (b.points ?? 0);
+        break;
+      case 'subject':
+        primary = textCompare(a.subject, b.subject);
+        break;
+      case 'subjectDesc':
+        primary = textCompare(b.subject, a.subject);
+        break;
+      case 'newest':
+      default:
+        primary = byNewest(a, b);
+    }
+    return primary || byNewest(a, b);
+  });
+  return sorted;
+}
 
 const exam = {
   _id: 'e1',
@@ -97,6 +162,21 @@ const exam = {
   },
   accessCode: 'ABCD1234',
 };
+
+function stripAnswersForStudent(examData) {
+  return {
+    ...examData,
+    questions: examData.questions.map((slot) => ({
+      ...slot,
+      question: {
+        ...slot.question,
+        correctAnswer: undefined,
+        explanation: undefined,
+        options: (slot.question.options || []).map(({ isCorrect, ...option }) => option),
+      },
+    })),
+  };
+}
 
 const attempt = {
   _id: 'a1',
@@ -125,7 +205,9 @@ const server = http.createServer((req, res) => {
   let raw = '';
   req.on('data', (c) => (raw += c));
   req.on('end', () => {
-    const url = req.url.split('?')[0];
+    const parsedUrl = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    const url = parsedUrl.pathname;
+    const query = Object.fromEntries(parsedUrl.searchParams.entries());
     const key = `${req.method} ${url}`;
     const authed = (req.headers.authorization || '').startsWith('Bearer ');
     let body = {};
@@ -134,13 +216,14 @@ const server = http.createServer((req, res) => {
     } catch {
       body = {};
     }
-    calls.push({ key, authed, body });
+    calls.push({ key, authed, query, body });
 
     // Routes that require a token.
     const needsAuth = [
       'GET /api/auth/me',
       'GET /api/exams/my-exams',
       'POST /api/exams/join',
+      'GET /api/exams/e1/take',
       'GET /api/attempts/my-attempts',
       'POST /api/attempts/start',
       'GET /api/questions',
@@ -202,7 +285,7 @@ const server = http.createServer((req, res) => {
         });
 
       case 'GET /api/exams/e1/take':
-        return send(res, 200, exam);
+        return send(res, 200, stripAnswersForStudent(exam));
 
       case 'GET /api/exams/e1/edit':
         return send(res, 200, exam);
@@ -253,8 +336,15 @@ const server = http.createServer((req, res) => {
           { ...attempt, status: 'completed', score: 2, percentage: 100, timeSpent: 42 },
         ]);
 
-      case 'GET /api/questions':
-        return send(res, 200, { questions, total: questions.length, pages: 1 });
+      case 'GET /api/questions': {
+        const sort = appliedSort(parsedUrl.searchParams);
+        return send(res, 200, {
+          questions: sortQuestionsForApi(sort),
+          total: questions.length,
+          pages: 1,
+          sort,
+        });
+      }
 
       case 'POST /api/questions':
         return send(res, 201, { ...question, _id: 'q4' });

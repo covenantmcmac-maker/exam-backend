@@ -188,6 +188,7 @@ async function studentJourney() {
 
   app.click('Results');
   step('results tab shows history', await app.waitForText(/My results/));
+  step('student results download button shown', /Download CSV/.test(app.rootText()));
 
   app.click('Profile');
   await app.waitForText(/Sam Student/);
@@ -233,7 +234,7 @@ async function teacherJourney() {
   step('correct option marked', /4 ✓/.test(qs) || /4/.test(qs));
   step('all three questions listed', /Define photosynthesis/.test(qs) && /Alexander/.test(qs));
   step('showing count reflects bank size', /Showing 3 of 3/.test(qs), qs.slice(0, 90));
-  step('subjects header rendered', /Subjects/.test(qs));
+  step('courses header rendered', /Courses \/ subjects/.test(qs));
   step('relative upload times rendered', /\dh ago/.test(qs) && /\dd ago/.test(qs), qs.slice(0, 90));
 
   /* ---- sorting: default is newest-first, re-sort alphabetically ---- */
@@ -270,7 +271,8 @@ async function teacherJourney() {
       /Difficulty hard→easy/.test(sortDlg) &&
       /Points high→low/.test(sortDlg) &&
       /Points low→high/.test(sortDlg) &&
-      /Subject A→Z/.test(sortDlg)
+      /Course A→Z/.test(sortDlg) &&
+      /Course Z→A/.test(sortDlg)
   );
 
   // The Modal fade-in swallows instant clicks; let it settle first.
@@ -284,27 +286,33 @@ async function teacherJourney() {
   });
   step('list re-sorted A→Z', resorted, JSON.stringify(order()));
   step('sort pill reflects new mode', /Sort: A→Z/.test(app.rootText()), app.rootText().slice(0, 90));
+  const questionCalls = (await serverCalls()).filter((c) => c.key === 'GET /api/questions');
+  step('server received selected sort key', questionCalls.some((c) => c.query?.sort === 'alpha'));
 
   /* ---- subject chip ordering ---- */
 
-  step('subject order pill opens chooser', app.click('A–Z ▾'));
-  step('subject chooser opens', await app.waitForDialog(/Order subjects/), app.dialogText());
+  step('course order pill opens chooser', app.click('A–Z ▾'));
+  step('course chooser opens', await app.waitForDialog(/Order courses/), app.dialogText());
   const subjDlg = app.dialogText();
-  step('subject chooser marks active option', /✓ A–Z/.test(subjDlg), subjDlg.slice(0, 120));
+  step('course chooser marks active option', /✓ Course A–Z/.test(subjDlg), subjDlg.slice(0, 120));
   step(
-    'subject chooser offers all orders',
-    /By count/.test(subjDlg) && /Most recent upload first/.test(subjDlg)
+    'course chooser offers all orders',
+    /Course Z–A/.test(subjDlg) &&
+      /Most questions first/.test(subjDlg) &&
+      /Fewest questions first/.test(subjDlg) &&
+      /Newest question first/.test(subjDlg) &&
+      /Oldest question first/.test(subjDlg)
   );
 
   await sleep(300);
-  app.clickDialog('By count (most questions first)');
+  app.clickDialog('Most questions first');
   step(
-    'subject chooser dismissed',
-    await app.waitFor(() => !/Order subjects/.test(app.dialogText()))
+    'course chooser dismissed',
+    await app.waitFor(() => !/Order courses/.test(app.dialogText()))
   );
   step(
-    'subject order pill updated',
-    await app.waitForText(/By count ▾/),
+    'course order pill updated',
+    await app.waitForText(/Most ▾/),
     app.rootText().slice(0, 90)
   );
 
@@ -351,6 +359,7 @@ async function examJourney() {
 
   const exam = app.rootText();
   step('exam screen rendered', examOk, exam.slice(-90));
+  step('secure exam mode banner shown', /Secure exam mode/.test(exam));
   step('countdown timer running', /\d\d:\d\d/.test(exam));
   step('options rendered', /A3/.test(exam) && /B4/.test(exam) && /C5/.test(exam));
   step('progress indicator', /Question 1 of 1/.test(exam));

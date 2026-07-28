@@ -32,7 +32,6 @@ import {
   isSortKey,
   isSubjectOrderKey,
   relativeTime,
-  sortQuestions,
   summarizeSubjects,
 } from './questionSort';
 import type { SortKey, SubjectOrderKey } from './questionSort';
@@ -62,11 +61,12 @@ export default function QuestionBankScreen({ navigation }: Props) {
   // Restore the persisted sort preferences once, on mount.
   useEffect(() => {
     let cancelled = false;
-    AsyncStorage.getMany([SORT_STORAGE_KEY, SUBJECT_ORDER_STORAGE_KEY])
-      .then((stored) => {
+    Promise.all([
+      AsyncStorage.getItem(SORT_STORAGE_KEY),
+      AsyncStorage.getItem(SUBJECT_ORDER_STORAGE_KEY),
+    ])
+      .then(([savedSort, savedOrder]) => {
         if (cancelled) return;
-        const savedSort = stored[SORT_STORAGE_KEY];
-        const savedOrder = stored[SUBJECT_ORDER_STORAGE_KEY];
         if (isSortKey(savedSort)) setSort(savedSort);
         if (isSubjectOrderKey(savedOrder)) setSubjectOrder(savedOrder);
       })
@@ -78,14 +78,14 @@ export default function QuestionBankScreen({ navigation }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const res = await questionsApi.list();
+      const res = await questionsApi.list({ sort });
       setQuestions(res.questions);
     } catch (e) {
       void dialog.notify('Error', e instanceof Error ? e.message : 'Could not load questions.');
     } finally {
       setLoading(false);
     }
-  }, [dialog]);
+  }, [dialog, sort]);
 
   useFocusEffect(
     useCallback(() => {
@@ -111,7 +111,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
 
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
-    const matched = questions.filter((q) => {
+    return questions.filter((q) => {
       const matchesTerm =
         !term ||
         q.questionText.toLowerCase().includes(term) ||
@@ -121,8 +121,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
         effectiveSubject === 'all' || (q.subject || '').trim() === effectiveSubject;
       return matchesTerm && matchesFilter && matchesSubject;
     });
-    return sortQuestions(matched, sort);
-  }, [questions, search, filter, effectiveSubject, sort]);
+  }, [questions, search, filter, effectiveSubject]);
 
   /** Open the sort chooser, marking the active option with a check. */
   const chooseSort = async () => {
@@ -142,8 +141,8 @@ export default function QuestionBankScreen({ navigation }: Props) {
   /** Open the subject-chip ordering chooser. */
   const chooseSubjectOrder = async () => {
     const next = await dialog.choose<SubjectOrderKey>(
-      'Order subjects',
-      undefined,
+      'Order courses',
+      'Choose how the course chips are ordered.',
       SUBJECT_ORDER_OPTIONS.map((o) => ({
         label: `${o.key === subjectOrder ? '\u2713 ' : ''}${o.label}`,
         value: o.key,
@@ -251,7 +250,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
         {subjects.length > 0 && (
           <>
             <View style={styles.subjectHeader}>
-              <Text style={styles.subjectLabel}>Subjects</Text>
+              <Text style={styles.subjectLabel}>Courses / subjects</Text>
               <Pressable
                 onPress={chooseSubjectOrder}
                 style={styles.sortPill}
@@ -274,7 +273,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
                 <Text
                   style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
                 >
-                  all subjects ({questions.length})
+                  all courses ({questions.length})
                 </Text>
               </Pressable>
               {subjects.map((s) => {
