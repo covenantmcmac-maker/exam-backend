@@ -231,6 +231,82 @@ async function teacherJourney() {
   const qs = app.rootText();
   step('question bank loaded', /What is 2 \+ 2/.test(qs), qs.slice(0, 70));
   step('correct option marked', /4 ✓/.test(qs) || /4/.test(qs));
+  step('all three questions listed', /Define photosynthesis/.test(qs) && /Alexander/.test(qs));
+  step('showing count reflects bank size', /Showing 3 of 3/.test(qs), qs.slice(0, 90));
+  step('subjects header rendered', /Subjects/.test(qs));
+  step('relative upload times rendered', /\dh ago/.test(qs) && /\dd ago/.test(qs), qs.slice(0, 90));
+
+  /* ---- sorting: default is newest-first, re-sort alphabetically ---- */
+
+  // Position of each question's text within the list, in render order.
+  const order = () => {
+    const t = app.rootText();
+    return {
+      maths: t.indexOf('What is 2 + 2'),
+      bio: t.indexOf('Define photosynthesis'),
+      hist: t.indexOf('Alexander the Great'),
+    };
+  };
+
+  const beforeSort = order();
+  step(
+    'default order is newest first',
+    beforeSort.maths < beforeSort.bio && beforeSort.bio < beforeSort.hist,
+    JSON.stringify(beforeSort)
+  );
+  step('sort pill shows active mode', /Sort: Newest/.test(app.rootText()));
+
+  step('sort pill opens chooser', app.click('Sort: Newest ▾'));
+  step('sort chooser lists all modes', await app.waitForDialog(/Sort questions/), app.dialogText());
+
+  const sortDlg = app.dialogText();
+  step('active mode is check-marked', /✓ Newest first/.test(sortDlg), sortDlg.slice(0, 120));
+  step(
+    'chooser offers every sort mode',
+    /Oldest first/.test(sortDlg) &&
+      /Alphabetical A→Z/.test(sortDlg) &&
+      /Alphabetical Z→A/.test(sortDlg) &&
+      /Difficulty easy→hard/.test(sortDlg) &&
+      /Difficulty hard→easy/.test(sortDlg) &&
+      /Points high→low/.test(sortDlg) &&
+      /Points low→high/.test(sortDlg) &&
+      /Subject A→Z/.test(sortDlg)
+  );
+
+  // The Modal fade-in swallows instant clicks; let it settle first.
+  await sleep(300);
+  app.clickDialog('Alphabetical A→Z');
+  step('chooser dismissed after picking', await app.waitFor(() => !/Sort questions/.test(app.dialogText())));
+
+  const resorted = await app.waitFor(() => {
+    const o = order();
+    return o.hist < o.bio && o.bio < o.maths;
+  });
+  step('list re-sorted A→Z', resorted, JSON.stringify(order()));
+  step('sort pill reflects new mode', /Sort: A→Z/.test(app.rootText()), app.rootText().slice(0, 90));
+
+  /* ---- subject chip ordering ---- */
+
+  step('subject order pill opens chooser', app.click('A–Z ▾'));
+  step('subject chooser opens', await app.waitForDialog(/Order subjects/), app.dialogText());
+  const subjDlg = app.dialogText();
+  step('subject chooser marks active option', /✓ A–Z/.test(subjDlg), subjDlg.slice(0, 120));
+  step(
+    'subject chooser offers all orders',
+    /By count/.test(subjDlg) && /Most recent upload first/.test(subjDlg)
+  );
+
+  await sleep(300);
+  app.clickDialog('By count (most questions first)');
+  step(
+    'subject chooser dismissed',
+    await app.waitFor(() => !/Order subjects/.test(app.dialogText()))
+  );
+  step(
+    'subject order pill updated',
+    await app.waitForText(/By count ▾/),
+    app.rootText().slice(0, 90)
+  );
 
   // Deleting a question must go through the new dialog.
   app.click('Delete');
