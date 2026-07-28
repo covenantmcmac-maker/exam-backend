@@ -2,10 +2,8 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { Button, Card, EmptyState, Loading } from '../../components/ui';
-import { useDialog } from '../../components/Dialog';
+import { Card, EmptyState, Loading } from '../../components/ui';
 import { attemptsApi } from '../../api/endpoints';
-import { buildCsv, downloadCsv } from '../../utils/csv';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
@@ -32,7 +30,6 @@ function formatDate(iso?: string) {
 export default function ResultsScreen() {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const dialog = useDialog();
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -62,47 +59,11 @@ export default function ResultsScreen() {
     setRefreshing(false);
   };
 
-  const downloadResults = () => {
-    const csv = buildCsv(
-      ['Exam', 'Subject', 'Score', 'Total points', 'Percentage', 'Status', 'Completed', 'Time spent'],
-      attempts.map((item) => {
-        const exam = typeof item.exam === 'object' ? item.exam : null;
-        return [
-          exam?.title || 'Exam',
-          exam?.subject || '',
-          item.score,
-          item.totalPoints,
-          `${Math.round(item.percentage || 0)}%`,
-          item.status,
-          item.completedAt ? new Date(item.completedAt).toLocaleString() : '',
-          formatDuration(item.timeSpent),
-        ];
-      })
-    );
-
-    const ok = downloadCsv('my-exam-results.csv', csv);
-    if (!ok) {
-      void dialog.notify(
-        'Download unavailable',
-        'CSV downloads are available in the web/PWA version. Open the app in a browser to download results.'
-      );
-    }
-  };
-
   if (loading) return <Loading text="Loading your results…" />;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <View style={styles.titleRow}>
-        <Text style={styles.title}>My results</Text>
-        <Button
-          title="Download CSV"
-          variant="ghost"
-          size="sm"
-          disabled={attempts.length === 0}
-          onPress={downloadResults}
-        />
-      </View>
+      <Text style={styles.title}>My results</Text>
 
       <FlatList
         data={attempts}
@@ -185,20 +146,13 @@ export default function ResultsScreen() {
 const makeStyles = (colors: Colors) =>
   StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.md,
-  },
   title: {
-    flex: 1,
     fontSize: 26,
     fontWeight: '800',
     color: colors.text,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
   },
   list: { padding: spacing.lg, paddingTop: 0, paddingBottom: spacing.xxl },
   emptyWrap: { flexGrow: 1 },

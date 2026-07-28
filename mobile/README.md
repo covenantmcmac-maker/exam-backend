@@ -89,39 +89,13 @@ development, add `http://localhost:8081` too.
 - Dashboard with exam and question counts
 - Exam list: publish/unpublish, share access code, edit, delete
 - Exam builder: pick questions from the bank, set duration, pass mark,
-  attempts, shuffle, and result visibility — with the installed-course list
-  (below) to name the exam and narrow the picker
+  attempts, shuffle, and result visibility
 - Question bank: search, filter by difficulty, multi-select bulk delete
 - Per-exam statistics with every submission, plus delete-attempt to allow a retake
 
 **Admins**
 - Everything a teacher can do, plus a panel with platform stats, user
   management (change role, delete), and global exam/attempt moderation
-
-### Installed courses
-
-There is no Course collection in the backend — **a course is just the `subject`
-string stored on each question**. The chip rows on the question bank and the
-exam builder are therefore derived from the questions you have uploaded: every
-distinct subject, with a count. A course appears as soon as a question carrying
-that subject exists and disappears when the last one is deleted, so there is no
-separate list to maintain.
-
-`summarizeSubjects()` in `src/screens/teacher/questionSort.ts` does the
-derivation for both screens; `src/components/SubjectChips.tsx` renders it.
-
-The exam builder shows the list twice, for the two things teachers do with it:
-
-- **Quick select**, under the Subject field. Tapping a course writes it into
-  Subject *and* narrows the question picker to it — one tap for the common case
-  of an exam covering a single course. Tapping the active course again clears
-  both; the field stays free text if you'd rather type your own. Questions
-  already picked from another course are kept, since an exam may span courses.
-- **Sorting**, in the Questions section. Narrows the picker without renaming the
-  exam, for assembling a mixed paper.
-
-If a teacher's questions all have an empty subject there are no courses to show,
-and the rows render nothing rather than an empty "all courses (0)" chip.
 
 ---
 
@@ -249,13 +223,13 @@ npm run test:all     # everything below, in order
 | Command | Checks |
 | --- | --- |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run test:api` | 59 — API contract against a mock server |
-| `npm run test:pwa` | 49 — manifest, HTML head, icons, service worker, host config |
+| `npm run test:api` | 26 — API contract against a mock server |
+| `npm run test:pwa` | 39 — manifest, HTML head, icons, service worker, host config |
 | `npm run test:sw` | 23 — service worker executed in a simulated scope |
-| `npm run test:e2e` | 79 — student/teacher/course-list/guest journeys in the real bundle |
+| `npm run test:e2e` | 40 — student/teacher/guest journeys in the real bundle |
 | `npm run test:pwa:ui` | 20 — install prompt, iOS instructions, offline + update banners |
 
-**230 checks total.**
+**128 checks total.**
 
 `test:api` compiles the real `src/api` layer, stubs AsyncStorage in memory, and
 drives it against `scripts/mock-server.js` — verifying URLs, verbs, auth

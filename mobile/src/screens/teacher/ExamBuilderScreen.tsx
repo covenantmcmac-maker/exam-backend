@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -9,8 +9,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field, Loading } from '../../components/ui';
-import SubjectChips from '../../components/SubjectChips';
-import { summarizeSubjects } from './questionSort';
 import { examsApi, questionsApi } from '../../api/endpoints';
 import { useDialog } from '../../components/Dialog';
 import { difficultyColor, radius, spacing } from '../../theme';
@@ -42,8 +40,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [bank, setBank] = useState<Question[]>([]);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [search, setSearch] = useState('');
-  /** Course filter for the question picker. Independent of `subject` above. */
-  const [bankSubject, setBankSubject] = useState('all');
+  const [subjectFilter, setSubjectFilter] = useState<string>('all');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -93,56 +90,112 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     };
   }, [examId]);
 
-  /**
-   * The installed courses: the distinct subjects across the teacher's question
-   * bank. Alphabetical here — the question bank lets you reorder the chips, but
-   * that's a browsing aid; when building an exam a stable A→Z list is easier to
-   * scan for a known course name.
-   */
-  const subjects = useMemo(() => summarizeSubjects(bank, 'alpha'), [bank]);
+  const subjects = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const q of bank) {
+      const s = (q.subject || '').trim();
+      if (!s) continue;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ name, count }));
+  }, [bank]);
 
-  /**
-   * Guard against a filter pinned to a course that no longer exists (its last
-   * question was deleted), which would otherwise show a permanently empty
-   * picker with no visible cause.
-   */
-  const activeSubject =
-    bankSubject === 'all' ||
-    subjects.some((s) => s.name.toLowerCase() === bankSubject.trim().toLowerCase())
-      ? bankSubject
+  const effectiveSubject =
+    subjectFilter === 'all' || subjects.some((s) => s.name === subjectFilter)
+      ? subjectFilter
       : 'all';
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
-    const course = activeSubject.trim().toLowerCase();
     return bank.filter((q) => {
       const matchesTerm =
         !term ||
         q.questionText.toLowerCase().includes(term) ||
         (q.subject || '').toLowerCase().includes(term);
-      const matchesCourse =
-        activeSubject === 'all' || (q.subject || '').trim().toLowerCase() === course;
-      return matchesTerm && matchesCourse;
+      const matchesSubject =
+        effectiveSubject === 'all' || (q.subject || '').trim() === effectiveSubject;
+      return matchesTerm && matchesSubject;
     });
-  }, [bank, search, activeSubject]);
+  }, [bank, search, effectiveSubject]);
+
+  const isSubjectFullySelected = useCallback(
+    (subjName: string) => {
+      const subjQuestions = bank.filter((q) => (q.subject || '').trim() === subjName);
+      if (subjQuestions.length === 0) return false;
+      return subjQuestions.every((q) => selected[q._id] !== undefined);
+    },
+    [bank, selected]
+  );
+
+  const getSubjectSelectedCount = useCallback(
+    (subjName: string) => {
+      return bank
+        .filter((q) => (q.subject || '').trim() === subjName)
+        .reduce((count, q) => count + (selected[q._id] !== undefined ? 1 : 0), 0);
+    },
+    [bank, selected]
+  );
+
+  const selectBySubject = useCallback(
+    (subjName: string) => {
+      setSelected((prev) => {
+        const next = { ...prev };
+        bank.forEach((q) => {
+          if ((q.subject || '').trim() === subjName) {
+            next[q._id] = q.points || 1;
+          }
+        });
+        return next;
+      });
+    },
+    [bank]
+  );
+
+  const deselectBySubject = useCallback(
+    (subjName: string) => {
+      setSelected((prev) => {
+        const next = { ...prev };
+        bank.forEach((q) => {
+          if ((q.subject || '').trim() === subjName) {
+            delete next[q._id];
+          }
+        });
+        return next;
+      });
+    },
+    [bank]
+  );
+
+  const selectAllFiltered = useCallback(() => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      filtered.forEach((q) => {
+        next[q._id] = q.points || 1;
+      });
+      return next;
+    });
+  }, [filtered]);
+
+  const deselectAllFiltered = useCallback(() => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      filtered.forEach((q) => {
+        delete next[q._id];
+      });
+      return next;
+    });
+  }, [filtered]);
+
+  const getSubjectButtonLabel = (name: string, total: number, selectedCount: number) => {
+    if (selectedCount === 0) return `+ Select all ${name} (${total})`;
+    if (selectedCount === total) return `✓ ${name} (${total}/${total})`;
+    return `+ Select all ${name} (${selectedCount}/${total})`;
+  };
 
   const selectedIds = Object.keys(selected);
   const totalMarks = selectedIds.reduce((sum, id) => sum + (selected[id] || 1), 0);
-
-  /**
-   * Quick-select a course: name the exam and narrow the picker in one tap.
-   * Tapping the active course again clears both, so a mis-tap doesn't force the
-   * teacher to empty the text field by hand.
-   *
-   * This deliberately does NOT unpick questions already chosen from another
-   * course — an exam may span courses, and silently dropping a selection the
-   * teacher can no longer see would lose work.
-   */
-  const pickCourse = (name: string) => {
-    const isActive = subject.trim().toLowerCase() === name.trim().toLowerCase();
-    setSubject(isActive ? '' : name);
-    setBankSubject(isActive ? 'all' : name);
-  };
 
   const toggle = (q: Question) => {
     setSelected((prev) => {
@@ -218,24 +271,6 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={subject}
             onChangeText={setSubject}
             placeholder="Mathematics"
-            hint={
-              subjects.length > 0
-                ? 'Tap a course from your question bank, or type your own.'
-                : undefined
-            }
-          />
-
-          {/*
-            Quick select. One tap names the exam and points the picker below at
-            the same course — the common case of an exam covering one course.
-            Tapping the active course again clears both.
-          */}
-          <SubjectChips
-            subjects={subjects}
-            selected={subject.trim() || 'all'}
-            onSelect={pickCourse}
-            showAll={false}
-            showCounts={false}
           />
           <Field
             label="Description (optional)"
@@ -294,24 +329,114 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={search}
             onChangeText={setSearch}
             placeholder="Search your question bank…"
+            style={{ marginBottom: spacing.sm }}
           />
 
-          {/* Sorting row: narrows the picker without renaming the exam. */}
           {subjects.length > 0 && (
-            <Text style={styles.subjectLabel}>Courses / subjects</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.subjectRow}
+            >
+              <Pressable
+                onPress={() => setSubjectFilter('all')}
+                style={[styles.chip, effectiveSubject === 'all' && styles.chipActive]}
+              >
+                <Text
+                  style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
+                >
+                  All subjects ({bank.length})
+                </Text>
+              </Pressable>
+              {subjects.map((s) => {
+                const active = effectiveSubject === s.name;
+                return (
+                  <Pressable
+                    key={s.name}
+                    onPress={() => setSubjectFilter(s.name)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {s.name} ({s.count})
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
           )}
-          <SubjectChips
-            subjects={subjects}
-            selected={activeSubject}
-            onSelect={setBankSubject}
-            allLabel="all courses"
-            total={bank.length}
-          />
 
           {bank.length > 0 && (
-            <Text style={styles.showing}>
-              Showing {filtered.length} of {bank.length}
-            </Text>
+            <View style={styles.selectionToolbar}>
+              {subjects.length > 0 && (
+                <View style={styles.subjectSelectWrap}>
+                  <Text style={styles.subjectSelectLabel}>Select all by subject:</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.subjectActionScroll}
+                  >
+                    {subjects.map((s) => {
+                      const allSelected = isSubjectFullySelected(s.name);
+                      const selectedCount = getSubjectSelectedCount(s.name);
+                      return (
+                        <Pressable
+                          key={s.name}
+                          onPress={() =>
+                            allSelected
+                              ? deselectBySubject(s.name)
+                              : selectBySubject(s.name)
+                          }
+                          style={[
+                            styles.subjectActionChip,
+                            allSelected && styles.subjectActionChipActive,
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            allSelected
+                              ? `Deselect all ${s.name} questions`
+                              : `Select all ${s.name} questions`
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.subjectActionText,
+                              allSelected && styles.subjectActionTextActive,
+                            ]}
+                          >
+                            {getSubjectButtonLabel(s.name, s.count, selectedCount)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+
+              <View style={styles.bulkActionsRow}>
+                <Pressable
+                  onPress={selectAllFiltered}
+                  style={styles.bulkBtn}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.bulkBtnText}>
+                    {effectiveSubject === 'all'
+                      ? `Select all (${filtered.length})`
+                      : `Select all ${effectiveSubject} (${filtered.length})`}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={deselectAllFiltered}
+                  style={styles.bulkBtn}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.bulkBtnText}>
+                    {effectiveSubject === 'all'
+                      ? 'Deselect all'
+                      : `Deselect all ${effectiveSubject}`}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
           )}
 
           {bank.length === 0 ? (
@@ -319,7 +444,9 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
               Your question bank is empty. Add questions from the Questions tab first.
             </Text>
           ) : filtered.length === 0 ? (
-            <Text style={styles.emptyBank}>No questions match this course or search.</Text>
+            <Text style={styles.emptyBank}>
+              No questions match your filter.
+            </Text>
           ) : (
             filtered.map((q) => {
               const isOn = selected[q._id] !== undefined;
@@ -410,16 +537,6 @@ const makeStyles = (colors: Colors) =>
   },
   pickCount: { fontSize: 13, fontWeight: '700', color: colors.primary, marginBottom: spacing.lg },
   emptyBank: { fontSize: 14, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.lg },
-  // Matches the question bank's course-row heading so the two screens read alike.
-  subjectLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: spacing.sm,
-  },
-  showing: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
   qRow: {
     flexDirection: 'row',
     gap: spacing.md,
@@ -447,4 +564,81 @@ const makeStyles = (colors: Colors) =>
   qMetaRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' },
   qDifficulty: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
   qMeta: { fontSize: 12, color: colors.textMuted },
+  subjectRow: { gap: spacing.sm, marginTop: spacing.xs, marginBottom: spacing.md },
+  chip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipText: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textTransform: 'capitalize',
+    fontWeight: '600',
+  },
+  chipTextActive: { color: colors.white },
+  selectionToolbar: {
+    marginBottom: spacing.md,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  subjectSelectWrap: {
+    marginBottom: spacing.md,
+  },
+  subjectSelectLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textMuted,
+    marginBottom: spacing.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  subjectActionScroll: {
+    gap: spacing.sm,
+  },
+  subjectActionChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  subjectActionChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  subjectActionText: {
+    fontSize: 13,
+    color: colors.primary,
+    fontWeight: '700',
+  },
+  subjectActionTextActive: {
+    color: colors.white,
+  },
+  bulkActionsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  bulkBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bulkBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
 });

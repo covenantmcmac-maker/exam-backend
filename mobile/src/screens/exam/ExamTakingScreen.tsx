@@ -1,9 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AppState,
-  AppStateStatus,
   BackHandler,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,7 +27,6 @@ interface Slot {
 }
 
 const TEXT_TYPES = ['short-answer', 'essay', 'fill-blank'];
-const SECURITY_WARNING_LIMIT = 3;
 
 function fmt(totalSeconds: number) {
   const s = Math.max(0, totalSeconds);
@@ -56,13 +52,10 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [securityWarnings, setSecurityWarnings] = useState(0);
 
   const submittedRef = useRef(false);
   const attemptIdRef = useRef<string | null>(null);
   const deadlineRef = useRef<number | null>(null);
-  const securityWarningsRef = useRef(0);
-  const lastSecurityEventRef = useRef(0);
 
   /* ------------------------------------------------------------- bootstrap */
   useEffect(() => {
@@ -148,79 +141,6 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     },
     [dialog, exam?.title, navigation]
   );
-
-  /* ----------------------------------------------------------- secure mode */
-  const recordSecurityEvent = useCallback(
-    (reason: string) => {
-      if (submittedRef.current) return;
-
-      const now = Date.now();
-      // Browser blur/visibility events can arrive in pairs; count one warning
-      // per short burst so students are not penalized twice for the same action.
-      if (now - lastSecurityEventRef.current < 1500) return;
-      lastSecurityEventRef.current = now;
-
-      const next = securityWarningsRef.current + 1;
-      securityWarningsRef.current = next;
-      setSecurityWarnings(next);
-
-      if (next >= SECURITY_WARNING_LIMIT) {
-        void dialog.notify(
-          'Exam security triggered',
-          'You left the secure exam window too many times. The exam is being submitted.'
-        );
-        void doSubmit(true);
-        return;
-      }
-
-      void dialog.notify(
-        'Stay in the exam',
-        `${reason} Warning ${next} of ${SECURITY_WARNING_LIMIT}. Your exam may auto-submit if this happens again.`
-      );
-    },
-    [dialog, doSubmit]
-  );
-
-  useEffect(() => {
-    if (loading || loadError || submittedRef.current) return;
-
-    const onAppState = (state: AppStateStatus) => {
-      if (state !== 'active') {
-        recordSecurityEvent('The exam app was sent to the background.');
-      }
-    };
-    const appSub = AppState.addEventListener('change', onAppState);
-
-    const cleanups: (() => void)[] = [() => appSub.remove()];
-
-    if (Platform.OS === 'web' && typeof document !== 'undefined' && typeof window !== 'undefined') {
-      const blockClipboard = (e: Event) => e.preventDefault();
-      const onVisibility = () => {
-        if (document.visibilityState === 'hidden') {
-          recordSecurityEvent('You left the exam tab.');
-        }
-      };
-      const onBlur = () => recordSecurityEvent('The exam window lost focus.');
-
-      document.addEventListener('copy', blockClipboard);
-      document.addEventListener('cut', blockClipboard);
-      document.addEventListener('paste', blockClipboard);
-      document.addEventListener('contextmenu', blockClipboard);
-      document.addEventListener('visibilitychange', onVisibility);
-      window.addEventListener('blur', onBlur);
-
-      cleanups.push(() => {
-        document.removeEventListener('copy', blockClipboard);
-        document.removeEventListener('cut', blockClipboard);
-        document.removeEventListener('paste', blockClipboard);
-        document.removeEventListener('contextmenu', blockClipboard);
-        document.removeEventListener('visibilitychange', onVisibility);
-        window.removeEventListener('blur', onBlur);
-      });
-    }
-
-    return () => cleanups.forEach((fn) => fn());
-  }, [loading, loadError, recordSecurityEvent]);
 
   /* ------------------------------------------------------------------ timer */
   useEffect(() => {
@@ -382,13 +302,6 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
         />
       </View>
 
-      <View style={styles.secureStrip}>
-        <Text style={styles.secureText}>
-          🔒 Secure exam mode · Stay on this screen · Warnings {securityWarnings}/
-          {SECURITY_WARNING_LIMIT}
-        </Text>
-      </View>
-
       {/* Question navigator */}
       <ScrollView
         horizontal
@@ -442,8 +355,6 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
             placeholder="Type your answer…"
             placeholderTextColor={colors.textLight}
             multiline={q.questionType === 'essay'}
-            contextMenuHidden
-            selectTextOnFocus={false}
             style={[styles.textAnswer, q.questionType === 'essay' && styles.essayAnswer]}
             textAlignVertical={q.questionType === 'essay' ? 'top' : 'center'}
           />
@@ -541,14 +452,6 @@ const makeStyles = (colors: Colors) =>
 
   progressBar: { height: 3, backgroundColor: colors.border },
   progressFill: { height: 3, backgroundColor: colors.primary },
-  secureStrip: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.warningLight,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  secureText: { fontSize: 12, fontWeight: '700', color: colors.warning },
 
   navStrip: { maxHeight: 56, backgroundColor: colors.card },
   navStripInner: {

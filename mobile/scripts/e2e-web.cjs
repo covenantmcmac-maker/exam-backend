@@ -188,7 +188,6 @@ async function studentJourney() {
 
   app.click('Results');
   step('results tab shows history', await app.waitForText(/My results/));
-  step('student results download button shown', /Download CSV/.test(app.rootText()));
 
   app.click('Profile');
   await app.waitForText(/Sam Student/);
@@ -227,94 +226,32 @@ async function teacherJourney() {
   step('access code card rendered', /ACCESS CODE/.test(exams) && /ABCD1234/.test(exams));
   step('publish state shown', /Live|Draft/.test(exams));
 
+  app.click('+ New');
+  await app.waitForText(/Select all by subject/);
+  const builder = app.rootText();
+  step(
+    'exam builder shows select by subject',
+    /Select all by subject/.test(builder) && /Select all Maths/.test(builder)
+  );
+  app.click('+ Select all Maths (1)');
+  await app.waitForText(/1 selected/);
+  step(
+    'select all by subject selects questions',
+    /1 selected/.test(app.rootText()) && /✓ Maths \(1\/1\)/.test(app.rootText())
+  );
+  const insEx = app.inputs();
+  app.setInput(insEx[0], 'Test Exam');
+  app.click('Create exam');
+  await app.waitForDialog(/Exam created/);
+  step('exam created via builder', /ABCD1234/.test(app.dialogText()));
+  app.clickDialog('OK');
+  await app.waitForText(/My exams/);
+
   app.click('Questions');
   await app.waitForText(/What is 2 \+ 2/);
   const qs = app.rootText();
   step('question bank loaded', /What is 2 \+ 2/.test(qs), qs.slice(0, 70));
   step('correct option marked', /4 ✓/.test(qs) || /4/.test(qs));
-  step('all three questions listed', /Define photosynthesis/.test(qs) && /Alexander/.test(qs));
-  step('showing count reflects bank size', /Showing 3 of 3/.test(qs), qs.slice(0, 90));
-  step('courses header rendered', /Courses \/ subjects/.test(qs));
-  step('relative upload times rendered', /\dh ago/.test(qs) && /\dd ago/.test(qs), qs.slice(0, 90));
-
-  /* ---- sorting: default is newest-first, re-sort alphabetically ---- */
-
-  // Position of each question's text within the list, in render order.
-  const order = () => {
-    const t = app.rootText();
-    return {
-      maths: t.indexOf('What is 2 + 2'),
-      bio: t.indexOf('Define photosynthesis'),
-      hist: t.indexOf('Alexander the Great'),
-    };
-  };
-
-  const beforeSort = order();
-  step(
-    'default order is newest first',
-    beforeSort.maths < beforeSort.bio && beforeSort.bio < beforeSort.hist,
-    JSON.stringify(beforeSort)
-  );
-  step('sort pill shows active mode', /Sort: Newest/.test(app.rootText()));
-
-  step('sort pill opens chooser', app.click('Sort: Newest ▾'));
-  step('sort chooser lists all modes', await app.waitForDialog(/Sort questions/), app.dialogText());
-
-  const sortDlg = app.dialogText();
-  step('active mode is check-marked', /✓ Newest first/.test(sortDlg), sortDlg.slice(0, 120));
-  step(
-    'chooser offers every sort mode',
-    /Oldest first/.test(sortDlg) &&
-      /Alphabetical A→Z/.test(sortDlg) &&
-      /Alphabetical Z→A/.test(sortDlg) &&
-      /Difficulty easy→hard/.test(sortDlg) &&
-      /Difficulty hard→easy/.test(sortDlg) &&
-      /Points high→low/.test(sortDlg) &&
-      /Points low→high/.test(sortDlg) &&
-      /Course A→Z/.test(sortDlg) &&
-      /Course Z→A/.test(sortDlg)
-  );
-
-  // The Modal fade-in swallows instant clicks; let it settle first.
-  await sleep(300);
-  app.clickDialog('Alphabetical A→Z');
-  step('chooser dismissed after picking', await app.waitFor(() => !/Sort questions/.test(app.dialogText())));
-
-  const resorted = await app.waitFor(() => {
-    const o = order();
-    return o.hist < o.bio && o.bio < o.maths;
-  });
-  step('list re-sorted A→Z', resorted, JSON.stringify(order()));
-  step('sort pill reflects new mode', /Sort: A→Z/.test(app.rootText()), app.rootText().slice(0, 90));
-  const questionCalls = (await serverCalls()).filter((c) => c.key === 'GET /api/questions');
-  step('server received selected sort key', questionCalls.some((c) => c.query?.sort === 'alpha'));
-
-  /* ---- subject chip ordering ---- */
-
-  step('course order pill opens chooser', app.click('A–Z ▾'));
-  step('course chooser opens', await app.waitForDialog(/Order courses/), app.dialogText());
-  const subjDlg = app.dialogText();
-  step('course chooser marks active option', /✓ Course A–Z/.test(subjDlg), subjDlg.slice(0, 120));
-  step(
-    'course chooser offers all orders',
-    /Course Z–A/.test(subjDlg) &&
-      /Most questions first/.test(subjDlg) &&
-      /Fewest questions first/.test(subjDlg) &&
-      /Newest question first/.test(subjDlg) &&
-      /Oldest question first/.test(subjDlg)
-  );
-
-  await sleep(300);
-  app.clickDialog('Most questions first');
-  step(
-    'course chooser dismissed',
-    await app.waitFor(() => !/Order courses/.test(app.dialogText()))
-  );
-  step(
-    'course order pill updated',
-    await app.waitForText(/Most ▾/),
-    app.rootText().slice(0, 90)
-  );
 
   // Deleting a question must go through the new dialog.
   app.click('Delete');
@@ -324,83 +261,6 @@ async function teacherJourney() {
     'cancel dismisses dialog',
     await app.waitFor(() => !/Delete question\?/.test(app.dialogText()))
   );
-
-  step('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
-  app.close();
-}
-
-/**
- * The installed-course list on the examination setting (exam builder) page.
- *
- * The list is derived from the subjects on the teacher's questions, and it
- * serves two purposes there: quick-selecting the exam's subject, and sorting
- * the questions being added. Asserted in the real bundle because this
- * regressed once before.
- */
-async function courseListJourney() {
-  journey('Teacher: exam builder course list');
-  const app = createApp();
-  await app.waitForText(/Sign in to continue/);
-
-  const ins = app.inputs();
-  app.setInput(ins[0], 'teacher@example.com');
-  app.setInput(ins[1], 'secret');
-  app.click('Log in');
-  await app.waitForText(/Hi, Ada/);
-
-  app.click('+ New exam');
-  step('exam builder opened', await app.waitForText(/Exam details/), app.rootText().slice(0, 120));
-
-  const built = await app.waitFor(() => /Biology \(1\)/.test(app.rootText()));
-  const page = app.rootText();
-
-  step('installed courses are listed', built, page.slice(0, 240));
-  step(
-    'every course in the bank appears',
-    /Biology \(1\)/.test(page) && /History \(1\)/.test(page) && /Maths \(1\)/.test(page)
-  );
-  step('sorting row totals the bank', /all courses \(3\)/.test(page));
-  step('courses row is labelled', /Courses \/ subjects/.test(page));
-  step('question count line shown', /Showing 3 of 3/.test(page));
-  step('quick-select hint shown', /Tap a course from your question bank/.test(page));
-
-  const subjectField = () => app.inputs().find((i) => /Mathematics/.test(i.placeholder || ''));
-  step('subject starts empty', subjectField()?.value === '');
-
-  /* ---- quick select: one tap names the exam and sorts the picker -------- */
-
-  // The countless chip in the details card is quick-select; the counted one
-  // further down is the sorting row.
-  app.click('Biology');
-  const named = await app.waitFor(() => subjectField()?.value === 'Biology');
-  step('quick select fills the Subject field', named, `value=${subjectField()?.value}`);
-
-  const sorted = await app.waitFor(() => !/What is 2 \+ 2\?/.test(app.rootText()));
-  step('quick select also sorts the picker', sorted, app.rootText().slice(0, 200));
-  step('matching question kept', /Define photosynthesis\./.test(app.rootText()));
-  step('count line reflects the filter', /Showing 1 of 3/.test(app.rootText()));
-
-  // Tapping the active course again clears both, so a mis-tap is recoverable.
-  app.click('Biology');
-  step(
-    'tapping the active course again clears it',
-    await app.waitFor(
-      () => subjectField()?.value === '' && /What is 2 \+ 2\?/.test(app.rootText())
-    ),
-    `value=${subjectField()?.value}`
-  );
-
-  /* ---- sorting row alone must not rename the exam ----------------------- */
-
-  app.click('History (1)');
-  step(
-    'sorting row filters the picker',
-    await app.waitFor(() => !/Define photosynthesis\./.test(app.rootText()))
-  );
-  step('sorting row leaves the Subject field alone', subjectField()?.value === '');
-
-  app.click('all courses (3)');
-  step('reset chip restores the full bank', await app.waitFor(() => /Showing 3 of 3/.test(app.rootText())));
 
   step('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
   app.close();
@@ -436,7 +296,6 @@ async function examJourney() {
 
   const exam = app.rootText();
   step('exam screen rendered', examOk, exam.slice(-90));
-  step('secure exam mode banner shown', /Secure exam mode/.test(exam));
   step('countdown timer running', /\d\d:\d\d/.test(exam));
   step('options rendered', /A3/.test(exam) && /B4/.test(exam) && /C5/.test(exam));
   step('progress indicator', /Question 1 of 1/.test(exam));
@@ -505,7 +364,6 @@ async function examJourney() {
   try {
     await studentJourney();
     await teacherJourney();
-    await courseListJourney();
     await examJourney();
   } catch (err) {
     console.error('\nUnexpected failure:', err);

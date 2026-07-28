@@ -2,10 +2,6 @@ const router = require('express').Router();
 const Exam = require('../models/Exam');
 const ExamAttempt = require('../models/ExamAttempt');
 const { auth, authorize } = require('../middleware/auth');
-const {
-  sanitizeExamForStudent,
-  studentAccessError
-} = require('./examSecurity');
 const crypto = require('crypto');
 
 // CREATE EXAM
@@ -216,16 +212,13 @@ router.get('/:id/stats', auth, authorize('teacher', 'admin'), async (req, res) =
 router.get('/:id/take', auth, async (req, res) => {
   try {
     const exam = await Exam.findById(req.params.id)
-      .populate('creator', '_id')
-      .populate('questions.question');
+      .populate({
+        path: 'questions.question',
+        select: '-correctAnswer -explanation'
+      });
 
     if (!exam) {
       return res.status(404).json({ message: 'Exam not found' });
-    }
-
-    const accessError = await studentAccessError(req, exam);
-    if (accessError) {
-      return res.status(403).json({ message: accessError });
     }
 
     let questions = [...exam.questions];
@@ -233,7 +226,7 @@ router.get('/:id/take', auth, async (req, res) => {
       questions = questions.sort(() => Math.random() - 0.5);
     }
 
-    res.json(sanitizeExamForStudent(exam, questions));
+    res.json({ ...exam.toObject(), questions });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching exam' });
   }
