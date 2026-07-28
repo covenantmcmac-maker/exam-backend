@@ -120,6 +120,14 @@ The exam builder shows the list twice, for the two things teachers do with it:
 - **Sorting**, in the Questions section. Narrows the picker without renaming the
   exam, for assembling a mixed paper.
 
+Next to the picker's "Showing N of M" line is a **Select all** button that picks
+every question currently visible, so with a course chip active it takes the
+whole course and with a search term it takes the matches. The label carries the
+count and the marks it will add, and flips to "Remove all N" once everything
+visible is already picked. Both directions are scoped to the visible set —
+questions picked under a different course are kept when you switch chips, for
+the same reason quick select leaves them alone.
+
 If a teacher's questions all have an empty subject there are no courses to show,
 and the rows render nothing rather than an empty "all courses (0)" chip.
 
@@ -252,10 +260,10 @@ npm run test:all     # everything below, in order
 | `npm run test:api` | 59 — API contract against a mock server |
 | `npm run test:pwa` | 49 — manifest, HTML head, icons, service worker, host config |
 | `npm run test:sw` | 23 — service worker executed in a simulated scope |
-| `npm run test:e2e` | 79 — student/teacher/course-list/guest journeys in the real bundle |
+| `npm run test:e2e` | 87 — student/teacher/course-list/bulk-select/guest journeys in the real bundle |
 | `npm run test:pwa:ui` | 20 — install prompt, iOS instructions, offline + update banners |
 
-**230 checks total.**
+**238 checks total.**
 
 `test:api` compiles the real `src/api` layer, stubs AsyncStorage in memory, and
 drives it against `scripts/mock-server.js` — verifying URLs, verbs, auth
