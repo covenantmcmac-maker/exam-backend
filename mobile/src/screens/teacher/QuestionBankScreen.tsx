@@ -141,8 +141,8 @@ export default function QuestionBankScreen({ navigation }: Props) {
   /** Open the subject-chip ordering chooser. */
   const chooseSubjectOrder = async () => {
     const next = await dialog.choose<SubjectOrderKey>(
-      'Order subjects',
-      undefined,
+      'Order courses',
+      'Choose how the course chips are ordered.',
       SUBJECT_ORDER_OPTIONS.map((o) => ({
         label: `${o.key === subjectOrder ? '\u2713 ' : ''}${o.label}`,
         value: o.key,
@@ -250,7 +250,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
         {subjects.length > 0 && (
           <>
             <View style={styles.subjectHeader}>
-              <Text style={styles.subjectLabel}>Subjects</Text>
+              <Text style={styles.subjectLabel}>Courses / subjects</Text>
               <Pressable
                 onPress={chooseSubjectOrder}
                 style={styles.sortPill}
@@ -273,7 +273,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
                 <Text
                   style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
                 >
-                  all subjects ({questions.length})
+                  all courses ({questions.length})
                 </Text>
               </Pressable>
               {subjects.map((s) => {

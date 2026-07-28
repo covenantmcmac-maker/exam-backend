@@ -7,7 +7,8 @@ const SORT_KEYS = Object.freeze([
   'difficultyDesc',
   'pointsDesc',
   'pointsAsc',
-  'subject'
+  'subject',
+  'subjectDesc'
 ]);
 
 const SORT_KEY_SET = new Set(SORT_KEYS);
@@ -21,10 +22,11 @@ const FIELD_SORTS = Object.freeze({
   alphaDesc: Object.freeze({ questionText: -1 }),
   pointsDesc: Object.freeze({ points: -1 }),
   pointsAsc: Object.freeze({ points: 1 }),
-  subject: Object.freeze({ subject: 1 })
+  subject: Object.freeze({ subject: 1 }),
+  subjectDesc: Object.freeze({ subject: -1 })
 });
 
-const TEXT_SORT_KEYS = new Set(['alpha', 'alphaDesc', 'subject']);
+const TEXT_SORT_KEYS = new Set(['alpha', 'alphaDesc', 'subject', 'subjectDesc']);
 
 function normalizeQuestionSort(value) {
   return typeof value === 'string' && SORT_KEY_SET.has(value) ? value : 'newest';

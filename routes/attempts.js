@@ -3,15 +3,25 @@ const ExamAttempt = require('../models/ExamAttempt');
 const Exam = require('../models/Exam');
 const Question = require('../models/Question');
 const { auth, authorize } = require('../middleware/auth');
+const {
+  examAvailabilityError,
+  isExamManager,
+  studentAccessError
+} = require('./examSecurity');
 
 // START ATTEMPT
 router.post('/start', auth, async (req, res) => {
   try {
     const { examId } = req.body;
 
-    const exam = await Exam.findById(examId);
+    const exam = await Exam.findById(examId).populate('creator', '_id');
     if (!exam) {
       return res.status(404).json({ message: 'Exam not found' });
+    }
+
+    const accessError = await studentAccessError(req, exam);
+    if (accessError) {
+      return res.status(403).json({ message: accessError });
     }
 
     const existingAttempt = await ExamAttempt.findOne({
@@ -55,6 +65,29 @@ router.patch('/:attemptId/answer', auth, async (req, res) => {
 
     if (!attempt) {
       return res.status(404).json({ message: 'Active attempt not found' });
+    }
+
+    const exam = await Exam.findById(attempt.exam);
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+
+    const availability = isExamManager(req, exam) ? null : examAvailabilityError(exam);
+    if (availability) {
+      return res.status(403).json({ message: availability });
+    }
+
+    const belongsToExam = exam.questions.some(
+      q => q.question && q.question.toString() === questionId
+    );
+    if (!belongsToExam) {
+      return res.status(400).json({ message: 'Question does not belong to this exam' });
+    }
+
+    const durationSec = (exam.settings.duration || 60) * 60;
+    const elapsed = Math.floor((Date.now() - attempt.startedAt.getTime()) / 1000);
+    if (!isExamManager(req, exam) && elapsed > durationSec + 30) {
+      return res.status(403).json({ message: 'Exam time has expired' });
     }
 
     const answerIndex = attempt.answers.findIndex(

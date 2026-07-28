@@ -87,6 +87,7 @@ const SORT_KEYS = new Set([
   'pointsDesc',
   'pointsAsc',
   'subject',
+  'subjectDesc',
 ]);
 
 const DIFFICULTY_RANK = { easy: 0, medium: 1, hard: 2 };
@@ -129,6 +130,9 @@ function sortQuestionsForApi(sort) {
       case 'subject':
         primary = textCompare(a.subject, b.subject);
         break;
+      case 'subjectDesc':
+        primary = textCompare(b.subject, a.subject);
+        break;
       case 'newest':
       default:
         primary = byNewest(a, b);
@@ -158,6 +162,21 @@ const exam = {
   },
   accessCode: 'ABCD1234',
 };
+
+function stripAnswersForStudent(examData) {
+  return {
+    ...examData,
+    questions: examData.questions.map((slot) => ({
+      ...slot,
+      question: {
+        ...slot.question,
+        correctAnswer: undefined,
+        explanation: undefined,
+        options: (slot.question.options || []).map(({ isCorrect, ...option }) => option),
+      },
+    })),
+  };
+}
 
 const attempt = {
   _id: 'a1',
@@ -204,6 +223,7 @@ const server = http.createServer((req, res) => {
       'GET /api/auth/me',
       'GET /api/exams/my-exams',
       'POST /api/exams/join',
+      'GET /api/exams/e1/take',
       'GET /api/attempts/my-attempts',
       'POST /api/attempts/start',
       'GET /api/questions',
@@ -265,7 +285,7 @@ const server = http.createServer((req, res) => {
         });
 
       case 'GET /api/exams/e1/take':
-        return send(res, 200, exam);
+        return send(res, 200, stripAnswersForStudent(exam));
 
       case 'GET /api/exams/e1/edit':
         return send(res, 200, exam);

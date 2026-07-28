@@ -104,7 +104,8 @@ type QuestionListSort =
   | 'difficultyDesc'
   | 'pointsDesc'
   | 'pointsAsc'
-  | 'subject';
+  | 'subject'
+  | 'subjectDesc';
 
 type QuestionListParams = {
   subject?: string;

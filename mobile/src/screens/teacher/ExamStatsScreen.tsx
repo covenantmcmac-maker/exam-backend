@@ -9,6 +9,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, EmptyState, Loading, StatTile } from '../../components/ui';
 import { attemptsApi, examsApi } from '../../api/endpoints';
+import { buildCsv, downloadCsv, safeFilename } from '../../utils/csv';
 import { useDialog } from '../../components/Dialog';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
@@ -26,6 +27,7 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
   const dialog = useDialog();
   const [stats, setStats] = useState<ExamStats | null>(null);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
+  const [examTitle, setExamTitle] = useState(title || 'Exam');
   const [passMark, setPassMark] = useState(50);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -39,13 +41,14 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
       const res = await examsApi.stats(examId);
       setStats(res.stats);
       setAttempts(res.attempts);
+      setExamTitle(res.exam?.title || title || 'Exam');
       setPassMark(res.exam?.settings?.passingMarks ?? 50);
     } catch (e) {
       void dialog.notify('Error', e instanceof Error ? e.message : 'Could not load statistics.');
     } finally {
       setLoading(false);
     }
-  }, [dialog, examId]);
+  }, [dialog, examId, title]);
 
   useEffect(() => {
     void load();
@@ -70,6 +73,49 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
       setAttempts((prev) => prev.filter((a) => a._id !== attempt._id));
     } catch (e) {
       void dialog.notify('Error', e instanceof Error ? e.message : 'Delete failed.');
+    }
+  };
+
+  const downloadSubmissions = () => {
+    const csv = buildCsv(
+      [
+        'Student name',
+        'Student email',
+        'Exam',
+        'Score',
+        'Total points',
+        'Percentage',
+        'Passed',
+        'Status',
+        'Started',
+        'Completed',
+        'Time spent (seconds)',
+      ],
+      attempts.map((attempt) => {
+        const student = typeof attempt.student === 'object' ? attempt.student : null;
+        const pct = Math.round(attempt.percentage || 0);
+        return [
+          student?.name || 'Student',
+          student?.email || '',
+          examTitle,
+          attempt.score,
+          attempt.totalPoints,
+          `${pct}%`,
+          pct >= passMark ? 'Yes' : 'No',
+          attempt.status,
+          attempt.startedAt ? new Date(attempt.startedAt).toLocaleString() : '',
+          attempt.completedAt ? new Date(attempt.completedAt).toLocaleString() : '',
+          attempt.timeSpent ?? '',
+        ];
+      })
+    );
+
+    const ok = downloadCsv(`${safeFilename(examTitle)}-student-results.csv`, csv);
+    if (!ok) {
+      void dialog.notify(
+        'Download unavailable',
+        'CSV downloads are available in the web/PWA version. Open the app in a browser to download student results.'
+      );
     }
   };
 
@@ -104,7 +150,16 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
           />
         </View>
 
-        <Text style={styles.sectionTitle}>Submissions ({attempts.length})</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Submissions ({attempts.length})</Text>
+          <Button
+            title="Download CSV"
+            variant="ghost"
+            size="sm"
+            disabled={attempts.length === 0}
+            onPress={downloadSubmissions}
+          />
+        </View>
 
         {attempts.length === 0 ? (
           <EmptyState
@@ -172,12 +227,19 @@ const makeStyles = (colors: Colors) =>
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   statRow: { flexDirection: 'row', gap: spacing.md, flexWrap: 'wrap' },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
+  },
   sectionTitle: {
+    flex: 1,
     fontSize: 17,
     fontWeight: '700',
     color: colors.text,
-    marginTop: spacing.xl,
-    marginBottom: spacing.md,
   },
   rowTop: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   studentName: { fontSize: 16, fontWeight: '700', color: colors.text },

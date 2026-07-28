@@ -23,7 +23,7 @@ function check(name, fn) {
 
 console.log('Question sort specs');
 
-check('exposes the nine client sort keys', () => {
+check('exposes the ten client sort keys', () => {
   assert.deepEqual(SORT_KEYS, [
     'newest',
     'oldest',
@@ -33,7 +33,8 @@ check('exposes the nine client sort keys', () => {
     'difficultyDesc',
     'pointsDesc',
     'pointsAsc',
-    'subject'
+    'subject',
+    'subjectDesc'
   ]);
 });
 
@@ -81,6 +82,12 @@ check('alphabetical Z→A sorts by question text descending', () => {
 check('subject sort uses ICU collation', () => {
   const spec = getQuestionSort('subject');
   assert.deepEqual(spec.sort, { subject: 1, createdAt: -1, _id: -1 });
+  assert.deepEqual(spec.collation, { locale: 'en', strength: 1 });
+});
+
+check('subject Z→A sorts descending with ICU collation', () => {
+  const spec = getQuestionSort('subjectDesc');
+  assert.deepEqual(spec.sort, { subject: -1, createdAt: -1, _id: -1 });
   assert.deepEqual(spec.collation, { locale: 'en', strength: 1 });
 });
 
