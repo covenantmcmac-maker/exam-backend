@@ -329,6 +329,83 @@ async function teacherJourney() {
   app.close();
 }
 
+/**
+ * The installed-course list on the examination setting (exam builder) page.
+ *
+ * The list is derived from the subjects on the teacher's questions, and it
+ * serves two purposes there: quick-selecting the exam's subject, and sorting
+ * the questions being added. Asserted in the real bundle because this
+ * regressed once before.
+ */
+async function courseListJourney() {
+  journey('Teacher: exam builder course list');
+  const app = createApp();
+  await app.waitForText(/Sign in to continue/);
+
+  const ins = app.inputs();
+  app.setInput(ins[0], 'teacher@example.com');
+  app.setInput(ins[1], 'secret');
+  app.click('Log in');
+  await app.waitForText(/Hi, Ada/);
+
+  app.click('+ New exam');
+  step('exam builder opened', await app.waitForText(/Exam details/), app.rootText().slice(0, 120));
+
+  const built = await app.waitFor(() => /Biology \(1\)/.test(app.rootText()));
+  const page = app.rootText();
+
+  step('installed courses are listed', built, page.slice(0, 240));
+  step(
+    'every course in the bank appears',
+    /Biology \(1\)/.test(page) && /History \(1\)/.test(page) && /Maths \(1\)/.test(page)
+  );
+  step('sorting row totals the bank', /all courses \(3\)/.test(page));
+  step('courses row is labelled', /Courses \/ subjects/.test(page));
+  step('question count line shown', /Showing 3 of 3/.test(page));
+  step('quick-select hint shown', /Tap a course from your question bank/.test(page));
+
+  const subjectField = () => app.inputs().find((i) => /Mathematics/.test(i.placeholder || ''));
+  step('subject starts empty', subjectField()?.value === '');
+
+  /* ---- quick select: one tap names the exam and sorts the picker -------- */
+
+  // The countless chip in the details card is quick-select; the counted one
+  // further down is the sorting row.
+  app.click('Biology');
+  const named = await app.waitFor(() => subjectField()?.value === 'Biology');
+  step('quick select fills the Subject field', named, `value=${subjectField()?.value}`);
+
+  const sorted = await app.waitFor(() => !/What is 2 \+ 2\?/.test(app.rootText()));
+  step('quick select also sorts the picker', sorted, app.rootText().slice(0, 200));
+  step('matching question kept', /Define photosynthesis\./.test(app.rootText()));
+  step('count line reflects the filter', /Showing 1 of 3/.test(app.rootText()));
+
+  // Tapping the active course again clears both, so a mis-tap is recoverable.
+  app.click('Biology');
+  step(
+    'tapping the active course again clears it',
+    await app.waitFor(
+      () => subjectField()?.value === '' && /What is 2 \+ 2\?/.test(app.rootText())
+    ),
+    `value=${subjectField()?.value}`
+  );
+
+  /* ---- sorting row alone must not rename the exam ----------------------- */
+
+  app.click('History (1)');
+  step(
+    'sorting row filters the picker',
+    await app.waitFor(() => !/Define photosynthesis\./.test(app.rootText()))
+  );
+  step('sorting row leaves the Subject field alone', subjectField()?.value === '');
+
+  app.click('all courses (3)');
+  step('reset chip restores the full bank', await app.waitFor(() => /Showing 3 of 3/.test(app.rootText())));
+
+  step('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
+  app.close();
+}
+
 async function examJourney() {
   journey('Guest: access code → exam → answer → submit → result');
   const app = createApp();
@@ -428,6 +505,7 @@ async function examJourney() {
   try {
     await studentJourney();
     await teacherJourney();
+    await courseListJourney();
     await examJourney();
   } catch (err) {
     console.error('\nUnexpected failure:', err);
