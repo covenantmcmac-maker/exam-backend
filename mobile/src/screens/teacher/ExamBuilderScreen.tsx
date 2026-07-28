@@ -9,6 +9,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field, Loading } from '../../components/ui';
+import SubjectChips from '../../components/SubjectChips';
+import { summarizeSubjects } from './questionSort';
 import { examsApi, questionsApi } from '../../api/endpoints';
 import { useDialog } from '../../components/Dialog';
 import { difficultyColor, radius, spacing } from '../../theme';
@@ -40,6 +42,8 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [bank, setBank] = useState<Question[]>([]);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [search, setSearch] = useState('');
+  /** Course filter for the question picker. Independent of `subject` above. */
+  const [bankSubject, setBankSubject] = useState('all');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -89,18 +93,56 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     };
   }, [examId]);
 
+  /**
+   * The installed courses: the distinct subjects across the teacher's question
+   * bank. Alphabetical here — the question bank lets you reorder the chips, but
+   * that's a browsing aid; when building an exam a stable A→Z list is easier to
+   * scan for a known course name.
+   */
+  const subjects = useMemo(() => summarizeSubjects(bank, 'alpha'), [bank]);
+
+  /**
+   * Guard against a filter pinned to a course that no longer exists (its last
+   * question was deleted), which would otherwise show a permanently empty
+   * picker with no visible cause.
+   */
+  const activeSubject =
+    bankSubject === 'all' ||
+    subjects.some((s) => s.name.toLowerCase() === bankSubject.trim().toLowerCase())
+      ? bankSubject
+      : 'all';
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return bank;
-    return bank.filter(
-      (q) =>
+    const course = activeSubject.trim().toLowerCase();
+    return bank.filter((q) => {
+      const matchesTerm =
+        !term ||
         q.questionText.toLowerCase().includes(term) ||
-        (q.subject || '').toLowerCase().includes(term)
-    );
-  }, [bank, search]);
+        (q.subject || '').toLowerCase().includes(term);
+      const matchesCourse =
+        activeSubject === 'all' || (q.subject || '').trim().toLowerCase() === course;
+      return matchesTerm && matchesCourse;
+    });
+  }, [bank, search, activeSubject]);
 
   const selectedIds = Object.keys(selected);
   const totalMarks = selectedIds.reduce((sum, id) => sum + (selected[id] || 1), 0);
+
+  /**
+   * Quick-select a course: name the exam and narrow the picker in one tap.
+   * Tapping the active course again clears both, so a mis-tap doesn't force the
+   * teacher to empty the text field by hand.
+   *
+   * This deliberately does NOT unpick questions already chosen from another
+   * course — an exam may span courses, and silently dropping a selection the
+   * teacher can no longer see would lose work.
+   */
+  const pickCourse = (name: string) => {
+    const isActive = subject.trim().toLowerCase() === name.trim().toLowerCase();
+    setSubject(isActive ? '' : name);
+    setBankSubject(isActive ? 'all' : name);
+  };
 
   const toggle = (q: Question) => {
     setSelected((prev) => {
@@ -176,6 +218,24 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={subject}
             onChangeText={setSubject}
             placeholder="Mathematics"
+            hint={
+              subjects.length > 0
+                ? 'Tap a course from your question bank, or type your own.'
+                : undefined
+            }
+          />
+
+          {/*
+            Quick select. One tap names the exam and points the picker below at
+            the same course — the common case of an exam covering one course.
+            Tapping the active course again clears both.
+          */}
+          <SubjectChips
+            subjects={subjects}
+            selected={subject.trim() || 'all'}
+            onSelect={pickCourse}
+            showAll={false}
+            showCounts={false}
           />
           <Field
             label="Description (optional)"
@@ -236,10 +296,30 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             placeholder="Search your question bank…"
           />
 
+          {/* Sorting row: narrows the picker without renaming the exam. */}
+          {subjects.length > 0 && (
+            <Text style={styles.subjectLabel}>Courses / subjects</Text>
+          )}
+          <SubjectChips
+            subjects={subjects}
+            selected={activeSubject}
+            onSelect={setBankSubject}
+            allLabel="all courses"
+            total={bank.length}
+          />
+
+          {bank.length > 0 && (
+            <Text style={styles.showing}>
+              Showing {filtered.length} of {bank.length}
+            </Text>
+          )}
+
           {bank.length === 0 ? (
             <Text style={styles.emptyBank}>
               Your question bank is empty. Add questions from the Questions tab first.
             </Text>
+          ) : filtered.length === 0 ? (
+            <Text style={styles.emptyBank}>No questions match this course or search.</Text>
           ) : (
             filtered.map((q) => {
               const isOn = selected[q._id] !== undefined;
@@ -330,6 +410,16 @@ const makeStyles = (colors: Colors) =>
   },
   pickCount: { fontSize: 13, fontWeight: '700', color: colors.primary, marginBottom: spacing.lg },
   emptyBank: { fontSize: 14, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.lg },
+  // Matches the question bank's course-row heading so the two screens read alike.
+  subjectLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.sm,
+  },
+  showing: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
   qRow: {
     flexDirection: 'row',
     gap: spacing.md,

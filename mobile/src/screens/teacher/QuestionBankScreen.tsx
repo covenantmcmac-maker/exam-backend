@@ -3,7 +3,6 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -12,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, Field, Loading } from '../../components/ui';
+import SubjectChips from '../../components/SubjectChips';
 import { questionsApi } from '../../api/endpoints';
 import { useDialog } from '../../components/Dialog';
 import { useColors } from '../../context/ThemeContext';
@@ -261,36 +261,13 @@ export default function QuestionBankScreen({ navigation }: Props) {
                 </Text>
               </Pressable>
             </View>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.subjectRow}
-            >
-              <Pressable
-                onPress={() => setSubject('all')}
-                style={[styles.chip, effectiveSubject === 'all' && styles.chipActive]}
-              >
-                <Text
-                  style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
-                >
-                  all courses ({questions.length})
-                </Text>
-              </Pressable>
-              {subjects.map((s) => {
-                const active = effectiveSubject === s.name;
-                return (
-                  <Pressable
-                    key={s.name}
-                    onPress={() => setSubject(s.name)}
-                    style={[styles.chip, active && styles.chipActive]}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                      {s.name} ({s.count})
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
+            <SubjectChips
+              subjects={subjects}
+              selected={effectiveSubject}
+              onSelect={setSubject}
+              allLabel="all courses"
+              total={questions.length}
+            />
           </>
         )}
         <View style={styles.filterRow}>
@@ -443,7 +420,6 @@ const makeStyles = (colors: Colors) =>
     title: { fontSize: 26, fontWeight: '800', color: colors.text },
     controls: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
     search: { marginBottom: 0 },
-    subjectRow: { gap: spacing.sm, marginTop: spacing.md },
     filterRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.md },
     showing: { fontSize: 12, color: colors.textMuted },
     showingRow: {
