@@ -20,6 +20,9 @@ const BASE = `http://127.0.0.1:${PORT}`;
 let passed = 0;
 let failed = 0;
 
+/** ISO timestamp `ms` milliseconds in the past. */
+const ago = (ms) => new Date(Date.now() - ms).toISOString();
+
 function check(name, cond, detail = '') {
   if (cond) {
     passed++;
@@ -89,6 +92,9 @@ const tsconfig = {
   include: [
     path.join(root, 'src/api/**/*.ts'),
     path.join(root, 'src/config.ts'),
+    // Pure sorting helpers for the question bank — no React imports, so they
+    // compile and run standalone here.
+    path.join(root, 'src/screens/teacher/questionSort.ts'),
     path.join(stubDir, '*.ts'),
   ],
 };
@@ -201,6 +207,13 @@ try {
 
   const takeExam = await examsApi.take('e1');
   check('take endpoint returns questions', takeExam.questions.length === 1);
+  check(
+    'take endpoint hides correct answers',
+    !takeExam.questions.some((slot) =>
+      typeof slot.question === 'object' &&
+      ((slot.question.options || []).some((o) => 'isCorrect' in o) || slot.question.correctAnswer)
+    )
+  );
 
   const started = await attemptsApi.start('e1');
   check('start attempt returns attempt id', started.attempt._id === 'a1');
@@ -231,10 +244,39 @@ try {
   check('publish toggle sends body', unpub.exam.settings.isPublished === false);
 
   const qs = await questionsApi.list();
-  check('question bank lists questions', qs.total === 1);
+  check('question bank lists questions', qs.total === 3, `total=${qs.total}`);
+  check(
+    'questions carry upload timestamps',
+    qs.questions.every((q) => !!q.createdAt && !Number.isNaN(Date.parse(q.createdAt)))
+  );
+  check(
+    'questions served newest-first',
+    qs.questions.map((q) => q._id).join(',') === 'q1,q2,q3',
+    qs.questions.map((q) => q._id).join(',')
+  );
+  check(
+    'questions span subjects and difficulties',
+    new Set(qs.questions.map((q) => q.subject)).size === 3 &&
+      new Set(qs.questions.map((q) => q.difficulty)).size === 3
+  );
+
+  const apiIds = (list) => list.map((q) => q._id).join(',');
+  const alphaQs = await questionsApi.list({ sort: 'alpha' });
+  check('question list echoes applied sort', alphaQs.sort === 'alpha', `sort=${alphaQs.sort}`);
+  check('server sorts questions alphabetically', apiIds(alphaQs.questions) === 'q3,q2,q1');
+  const hardFirstQs = await questionsApi.list({ sort: 'difficultyDesc' });
+  check('server sorts difficulty hard→easy', apiIds(hardFirstQs.questions) === 'q2,q3,q1');
+  const courseDescQs = await questionsApi.list({ sort: 'subjectDesc' });
+  check('server sorts courses Z→A', apiIds(courseDescQs.questions) === 'q1,q3,q2');
+  const fallbackQs = await questionsApi.list({ sort: 'bogus' });
+  check(
+    'unknown question sort falls back to newest',
+    fallbackQs.sort === 'newest' && apiIds(fallbackQs.questions) === 'q1,q2,q3',
+    `${fallbackQs.sort}:${apiIds(fallbackQs.questions)}`
+  );
 
   const newQ = await questionsApi.create({ questionText: 'Q?', questionType: 'essay' });
-  check('create question returns id', newQ._id === 'q2');
+  check('create question returns id', newQ._id === 'q4');
 
   const bulk = await questionsApi.bulkUpload({
     uri: 'file:///tmp/questions.csv',
@@ -242,6 +284,56 @@ try {
     type: 'text/csv',
   });
   check('bulk upload returns imported count', bulk.count === 3);
+
+  console.log('\nQuestion bank sorting');
+  const sortMod = path.join(jsRoot, 'src/screens/teacher/questionSort.js');
+  const { sortQuestions, summarizeSubjects, relativeTime, SORT_OPTIONS } = await import(sortMod);
+
+  const ids = (list) => list.map((q) => q._id).join(',');
+  const bank = qs.questions;
+
+  check('ten sort modes offered', SORT_OPTIONS.length === 10, `got ${SORT_OPTIONS.length}`);
+  check('newest first', ids(sortQuestions(bank, 'newest')) === 'q1,q2,q3');
+  check('oldest first', ids(sortQuestions(bank, 'oldest')) === 'q3,q2,q1');
+  check(
+    'alphabetical A→Z',
+    ids(sortQuestions(bank, 'alpha')) === 'q3,q2,q1',
+    ids(sortQuestions(bank, 'alpha'))
+  );
+  check('alphabetical Z→A', ids(sortQuestions(bank, 'alphaDesc')) === 'q1,q2,q3');
+  check('difficulty easy→hard', ids(sortQuestions(bank, 'difficultyAsc')) === 'q1,q3,q2');
+  check('difficulty hard→easy', ids(sortQuestions(bank, 'difficultyDesc')) === 'q2,q3,q1');
+  check('points high→low', ids(sortQuestions(bank, 'pointsDesc')) === 'q2,q3,q1');
+  check('points low→high', ids(sortQuestions(bank, 'pointsAsc')) === 'q1,q3,q2');
+  check('course A→Z', ids(sortQuestions(bank, 'subject')) === 'q2,q3,q1');
+  check('course Z→A', ids(sortQuestions(bank, 'subjectDesc')) === 'q1,q3,q2');
+  check('sort does not mutate input', ids(bank) === 'q1,q2,q3');
+
+  // Ties must fall back to newest-upload-first.
+  const tied = [
+    { _id: 'old', questionText: 'Same', difficulty: 'easy', points: 1, createdAt: ago(5) },
+    { _id: 'new', questionText: 'Same', difficulty: 'easy', points: 1, createdAt: ago(1) },
+  ];
+  check('ties break by upload time', ids(sortQuestions(tied, 'alpha')) === 'new,old');
+
+  const subjectsAlpha = summarizeSubjects(bank, 'alpha').map((s) => s.name).join(',');
+  check('courses A–Z', subjectsAlpha === 'Biology,History,Maths', subjectsAlpha);
+  const subjectsAlphaDesc = summarizeSubjects(bank, 'alphaDesc').map((s) => s.name).join(',');
+  check('courses Z–A', subjectsAlphaDesc === 'Maths,History,Biology', subjectsAlphaDesc);
+  const subjectsRecent = summarizeSubjects(bank, 'recent').map((s) => s.name).join(',');
+  check('courses by newest question', subjectsRecent === 'Maths,Biology,History', subjectsRecent);
+  const subjectsOldest = summarizeSubjects(bank, 'oldest').map((s) => s.name).join(',');
+  check('courses by oldest question', subjectsOldest === 'History,Biology,Maths', subjectsOldest);
+  const countedBank = [...bank, { ...bank[1], _id: 'extra' }];
+  const counted = summarizeSubjects(countedBank, 'count');
+  check('courses by most questions', counted[0].name === 'Biology' && counted[0].count === 2);
+  const countAsc = summarizeSubjects(countedBank, 'countAsc');
+  check('courses by fewest questions', countAsc[0].count === 1 && countAsc[0].name === 'History');
+
+  check('relative time in hours', relativeTime(ago(3 * 60 * 60 * 1000)) === '3h ago');
+  check('relative time in days', relativeTime(ago(2 * 24 * 60 * 60 * 1000)) === '2d ago');
+  check('relative time in weeks', relativeTime(ago(7 * 24 * 60 * 60 * 1000)) === '1w ago');
+  check('relative time tolerates missing date', relativeTime(undefined) === '');
 
   console.log('\nAdmin');
   const adminStats = await adminApi.stats();

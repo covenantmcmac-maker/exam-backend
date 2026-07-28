@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const Question = require('../models/Question');
+const { getQuestionSort } = require('./questionSort');
 const { auth, authorize } = require('../middleware/auth');
 const multer = require('multer');
 const csv = require('csv-parser');
@@ -248,7 +249,11 @@ router.post('/', auth, authorize('teacher', 'admin'), async (req, res) => {
 // GET ALL QUESTIONS
 router.get('/', auth, authorize('teacher', 'admin'), async (req, res) => {
   try {
-    const { subject, difficulty, type, page = 1, limit = 10000 } = req.query;
+    const { subject, difficulty, type, page = 1, limit = 10000, sort } = req.query;
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.max(parseInt(limit, 10) || 10000, 1);
+    const skip = (pageNum - 1) * limitNum;
+    const sortConfig = getQuestionSort(sort);
 
     const filter = { creator: req.user._id };
     if (subject) filter.subject = subject;
@@ -256,15 +261,35 @@ router.get('/', auth, authorize('teacher', 'admin'), async (req, res) => {
     if (type) filter.questionType = type;
 
     const total = await Question.countDocuments(filter);
-    const questions = await Question.find(filter)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * parseInt(limit))
-      .limit(parseInt(limit));
+    let questions;
+
+    if (sortConfig.mode === 'aggregate') {
+      questions = await Question.aggregate([
+        { $match: filter },
+        { $addFields: sortConfig.addFields },
+        { $sort: sortConfig.sort },
+        { $skip: skip },
+        { $limit: limitNum },
+        { $project: { [sortConfig.rankField]: 0 } }
+      ]);
+    } else {
+      let query = Question.find(filter)
+        .sort(sortConfig.sort)
+        .skip(skip)
+        .limit(limitNum);
+
+      if (sortConfig.collation) {
+        query = query.collation(sortConfig.collation);
+      }
+
+      questions = await query;
+    }
 
     res.json({
       questions,
       total,
-      pages: Math.ceil(total / parseInt(limit))
+      pages: Math.ceil(total / limitNum),
+      sort: sortConfig.key
     });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching questions' });

@@ -188,6 +188,7 @@ async function studentJourney() {
 
   app.click('Results');
   step('results tab shows history', await app.waitForText(/My results/));
+  step('student results download button shown', /Download CSV/.test(app.rootText()));
 
   app.click('Profile');
   await app.waitForText(/Sam Student/);
@@ -231,6 +232,89 @@ async function teacherJourney() {
   const qs = app.rootText();
   step('question bank loaded', /What is 2 \+ 2/.test(qs), qs.slice(0, 70));
   step('correct option marked', /4 ✓/.test(qs) || /4/.test(qs));
+  step('all three questions listed', /Define photosynthesis/.test(qs) && /Alexander/.test(qs));
+  step('showing count reflects bank size', /Showing 3 of 3/.test(qs), qs.slice(0, 90));
+  step('courses header rendered', /Courses \/ subjects/.test(qs));
+  step('relative upload times rendered', /\dh ago/.test(qs) && /\dd ago/.test(qs), qs.slice(0, 90));
+
+  /* ---- sorting: default is newest-first, re-sort alphabetically ---- */
+
+  // Position of each question's text within the list, in render order.
+  const order = () => {
+    const t = app.rootText();
+    return {
+      maths: t.indexOf('What is 2 + 2'),
+      bio: t.indexOf('Define photosynthesis'),
+      hist: t.indexOf('Alexander the Great'),
+    };
+  };
+
+  const beforeSort = order();
+  step(
+    'default order is newest first',
+    beforeSort.maths < beforeSort.bio && beforeSort.bio < beforeSort.hist,
+    JSON.stringify(beforeSort)
+  );
+  step('sort pill shows active mode', /Sort: Newest/.test(app.rootText()));
+
+  step('sort pill opens chooser', app.click('Sort: Newest ▾'));
+  step('sort chooser lists all modes', await app.waitForDialog(/Sort questions/), app.dialogText());
+
+  const sortDlg = app.dialogText();
+  step('active mode is check-marked', /✓ Newest first/.test(sortDlg), sortDlg.slice(0, 120));
+  step(
+    'chooser offers every sort mode',
+    /Oldest first/.test(sortDlg) &&
+      /Alphabetical A→Z/.test(sortDlg) &&
+      /Alphabetical Z→A/.test(sortDlg) &&
+      /Difficulty easy→hard/.test(sortDlg) &&
+      /Difficulty hard→easy/.test(sortDlg) &&
+      /Points high→low/.test(sortDlg) &&
+      /Points low→high/.test(sortDlg) &&
+      /Course A→Z/.test(sortDlg) &&
+      /Course Z→A/.test(sortDlg)
+  );
+
+  // The Modal fade-in swallows instant clicks; let it settle first.
+  await sleep(300);
+  app.clickDialog('Alphabetical A→Z');
+  step('chooser dismissed after picking', await app.waitFor(() => !/Sort questions/.test(app.dialogText())));
+
+  const resorted = await app.waitFor(() => {
+    const o = order();
+    return o.hist < o.bio && o.bio < o.maths;
+  });
+  step('list re-sorted A→Z', resorted, JSON.stringify(order()));
+  step('sort pill reflects new mode', /Sort: A→Z/.test(app.rootText()), app.rootText().slice(0, 90));
+  const questionCalls = (await serverCalls()).filter((c) => c.key === 'GET /api/questions');
+  step('server received selected sort key', questionCalls.some((c) => c.query?.sort === 'alpha'));
+
+  /* ---- subject chip ordering ---- */
+
+  step('course order pill opens chooser', app.click('A–Z ▾'));
+  step('course chooser opens', await app.waitForDialog(/Order courses/), app.dialogText());
+  const subjDlg = app.dialogText();
+  step('course chooser marks active option', /✓ Course A–Z/.test(subjDlg), subjDlg.slice(0, 120));
+  step(
+    'course chooser offers all orders',
+    /Course Z–A/.test(subjDlg) &&
+      /Most questions first/.test(subjDlg) &&
+      /Fewest questions first/.test(subjDlg) &&
+      /Newest question first/.test(subjDlg) &&
+      /Oldest question first/.test(subjDlg)
+  );
+
+  await sleep(300);
+  app.clickDialog('Most questions first');
+  step(
+    'course chooser dismissed',
+    await app.waitFor(() => !/Order courses/.test(app.dialogText()))
+  );
+  step(
+    'course order pill updated',
+    await app.waitForText(/Most ▾/),
+    app.rootText().slice(0, 90)
+  );
 
   // Deleting a question must go through the new dialog.
   app.click('Delete');
@@ -275,6 +359,7 @@ async function examJourney() {
 
   const exam = app.rootText();
   step('exam screen rendered', examOk, exam.slice(-90));
+  step('secure exam mode banner shown', /Secure exam mode/.test(exam));
   step('countdown timer running', /\d\d:\d\d/.test(exam));
   step('options rendered', /A3/.test(exam) && /B4/.test(exam) && /C5/.test(exam));
   step('progress indicator', /Question 1 of 1/.test(exam));
