@@ -130,6 +130,24 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const totalMarks = selectedIds.reduce((sum, id) => sum + (selected[id] || 1), 0);
 
   /**
+   * The visible questions not yet picked — what a "Select all" tap would add.
+   * Labelling the button with this delta rather than `filtered.length` keeps it
+   * honest when some of the visible questions are already in the exam.
+   */
+  const missing = useMemo(
+    () => filtered.filter((q) => selected[q._id] === undefined),
+    [filtered, selected]
+  );
+  const missingMarks = missing.reduce((sum, q) => sum + (q.points || 1), 0);
+
+  /** Nothing left to add means everything visible is picked, so the button removes instead. */
+  const allVisiblePicked = filtered.length > 0 && missing.length === 0;
+
+  const bulkLabel = allVisiblePicked
+    ? `Remove all ${filtered.length}`
+    : `Select all ${missing.length} · +${missingMarks} mark${missingMarks === 1 ? '' : 's'}`;
+
+  /**
    * Quick-select a course: name the exam and narrow the picker in one tap.
    * Tapping the active course again clears both, so a mis-tap doesn't force the
    * teacher to empty the text field by hand.
@@ -149,6 +167,30 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
       const next = { ...prev };
       if (next[q._id] !== undefined) delete next[q._id];
       else next[q._id] = q.points || 1;
+      return next;
+    });
+  };
+
+  /**
+   * Pick — or unpick — every question currently visible in one tap. With a
+   * course chip active that is the whole course; with a search term it is the
+   * matches. Building a single-course paper is the common case, and doing it
+   * one row at a time is the slowest part of the screen.
+   *
+   * Both directions are scoped to `filtered`, never the whole bank: removing
+   * must not discard questions picked under a different course that the
+   * teacher cannot currently see. Same reasoning as `pickCourse` above.
+   */
+  const toggleAllVisible = () => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      if (allVisiblePicked) {
+        filtered.forEach((q) => delete next[q._id]);
+      } else {
+        filtered.forEach((q) => {
+          if (next[q._id] === undefined) next[q._id] = q.points || 1;
+        });
+      }
       return next;
     });
   };
@@ -309,9 +351,30 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           />
 
           {bank.length > 0 && (
-            <Text style={styles.showing}>
-              Showing {filtered.length} of {bank.length}
-            </Text>
+            <View style={styles.showingRow}>
+              <Text style={styles.showing}>
+                Showing {filtered.length} of {bank.length}
+              </Text>
+              {/*
+                Bulk pick for the visible set. Hidden when the filter matches
+                nothing, since there would be neither anything to add nor to
+                remove.
+              */}
+              {filtered.length > 0 && (
+                <Pressable
+                  onPress={toggleAllVisible}
+                  style={styles.bulkPill}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    allVisiblePicked
+                      ? `Remove all ${filtered.length} visible questions`
+                      : `Select all ${missing.length} visible questions`
+                  }
+                >
+                  <Text style={styles.bulkPillText}>{bulkLabel}</Text>
+                </Pressable>
+              )}
+            </View>
           )}
 
           {bank.length === 0 ? (
@@ -419,7 +482,24 @@ const makeStyles = (colors: Colors) =>
     letterSpacing: 0.5,
     marginBottom: spacing.sm,
   },
-  showing: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
+  // Mirrors the question bank's showing row, which pairs the same count with a pill.
+  showingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  showing: { fontSize: 12, color: colors.textMuted },
+  bulkPill: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.card,
+  },
+  bulkPillText: { fontSize: 12, color: colors.primary, fontWeight: '700' },
   qRow: {
     flexDirection: 'row',
     gap: spacing.md,

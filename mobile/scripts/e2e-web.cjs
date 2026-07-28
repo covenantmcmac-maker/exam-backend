@@ -406,6 +406,92 @@ async function courseListJourney() {
   app.close();
 }
 
+/**
+ * Bulk select-all in the exam builder's question picker.
+ *
+ * The button acts on the *visible* set, so it must respect the course chip and
+ * the search box, and must never touch picks the teacher cannot currently see
+ * — dropping those would silently lose work when switching between courses.
+ */
+async function bulkSelectJourney() {
+  journey('Teacher: bulk select in the question picker');
+  const app = createApp();
+  await app.waitForText(/Sign in to continue/);
+
+  const ins = app.inputs();
+  app.setInput(ins[0], 'teacher@example.com');
+  app.setInput(ins[1], 'secret');
+  app.click('Log in');
+  await app.waitForText(/Hi, Ada/);
+
+  app.click('+ New exam');
+  await app.waitForText(/Exam details/);
+  await app.waitFor(() => /Showing 3 of 3/.test(app.rootText()));
+
+  /* ---- the whole bank, one tap ----------------------------------------- */
+
+  step(
+    'select-all offers the visible count and the marks it adds',
+    /Select all 3 · \+10 marks/.test(app.rootText()),
+    app.rootText().slice(0, 200)
+  );
+
+  app.click('Select all 3 · +10 marks');
+  step(
+    'select all picks every visible question',
+    await app.waitFor(() => /3 selected · 10 marks/.test(app.rootText())),
+    app.rootText().slice(0, 200)
+  );
+  step(
+    'button flips to remove once everything visible is picked',
+    /Remove all 3/.test(app.rootText()),
+    app.rootText().slice(0, 200)
+  );
+
+  app.click('Remove all 3');
+  step(
+    'remove all clears the visible picks and restores the select label',
+    await app.waitFor(
+      () =>
+        /0 selected · 0 marks/.test(app.rootText()) &&
+        /Select all 3 · \+10 marks/.test(app.rootText())
+    ),
+    app.rootText().slice(0, 200)
+  );
+
+  /* ---- scoped to the filter, and non-destructive across courses -------- */
+
+  // Sorting-row chip: narrows the picker without renaming the exam.
+  app.click('Biology (1)');
+  await app.waitFor(() => /Showing 1 of 3/.test(app.rootText()));
+  app.click('Select all 1 · +5 marks');
+  step(
+    'select all is scoped to the active course',
+    await app.waitFor(() => /1 selected · 5 marks/.test(app.rootText())),
+    app.rootText().slice(0, 200)
+  );
+
+  app.click('Maths (1)');
+  await app.waitFor(() => /Select all 1 · \+2 marks/.test(app.rootText()));
+  app.click('Select all 1 · +2 marks');
+  step(
+    'picks from another course survive a chip switch',
+    await app.waitFor(() => /2 selected · 7 marks/.test(app.rootText())),
+    app.rootText().slice(0, 200)
+  );
+
+  // Removing while Maths is showing must leave the unseen Biology pick alone.
+  app.click('Remove all 1');
+  step(
+    'remove all only drops the questions currently visible',
+    await app.waitFor(() => /1 selected · 5 marks/.test(app.rootText())),
+    app.rootText().slice(0, 200)
+  );
+
+  step('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
+  app.close();
+}
+
 async function examJourney() {
   journey('Guest: access code → exam → answer → submit → result');
   const app = createApp();
@@ -506,6 +592,7 @@ async function examJourney() {
     await studentJourney();
     await teacherJourney();
     await courseListJourney();
+    await bulkSelectJourney();
     await examJourney();
   } catch (err) {
     console.error('\nUnexpected failure:', err);
