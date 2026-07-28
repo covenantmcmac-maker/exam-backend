@@ -26,6 +26,13 @@ const student = {
   role: 'student',
 };
 
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+const now = Date.now();
+
+/** Upload timestamps are staggered so sort-by-date has something to order. */
+const ago = (ms) => new Date(now - ms).toISOString();
+
 const question = {
   _id: 'q1',
   questionText: 'What is 2 + 2?',
@@ -38,7 +45,37 @@ const question = {
   points: 2,
   difficulty: 'easy',
   subject: 'Maths',
+  createdAt: ago(HOUR),
 };
+
+const question2 = {
+  _id: 'q2',
+  questionText: 'Define photosynthesis.',
+  questionType: 'short-answer',
+  options: [],
+  correctAnswer: 'Converting light into chemical energy',
+  points: 5,
+  difficulty: 'hard',
+  subject: 'Biology',
+  createdAt: ago(2 * DAY),
+};
+
+const question3 = {
+  _id: 'q3',
+  questionText: 'Alexander the Great was tutored by Aristotle.',
+  questionType: 'true-false',
+  options: [
+    { _id: 'o4', text: 'True', isCorrect: true },
+    { _id: 'o5', text: 'False', isCorrect: false },
+  ],
+  points: 3,
+  difficulty: 'medium',
+  subject: 'History',
+  createdAt: ago(7 * DAY),
+};
+
+/** Served newest-first, mirroring the real API's default ordering. */
+const questions = [question, question2, question3];
 
 const exam = {
   _id: 'e1',
@@ -217,10 +254,10 @@ const server = http.createServer((req, res) => {
         ]);
 
       case 'GET /api/questions':
-        return send(res, 200, { questions: [question], total: 1, pages: 1 });
+        return send(res, 200, { questions, total: questions.length, pages: 1 });
 
       case 'POST /api/questions':
-        return send(res, 201, { ...question, _id: 'q2' });
+        return send(res, 201, { ...question, _id: 'q4' });
 
       case 'POST /api/questions/bulk-upload':
         // Multipart body — the mock just pretends three questions landed.
@@ -242,7 +279,7 @@ const server = http.createServer((req, res) => {
           totalStudents: 1,
           totalAdmins: 1,
           totalExams: 1,
-          totalQuestions: 1,
+          totalQuestions: 3,
           totalAttempts: 1,
           completedAttempts: 1,
         });
