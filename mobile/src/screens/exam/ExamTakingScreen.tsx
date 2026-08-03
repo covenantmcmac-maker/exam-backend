@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AppState,
   BackHandler,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,6 +11,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  allowScreenCaptureAsync,
+  enableAppSwitcherProtectionAsync,
+  preventScreenCaptureAsync,
+} from 'expo-screen-capture';
 import { Button, Loading } from '../../components/ui';
 import { useDialog } from '../../components/Dialog';
 import { attemptsApi, examsApi } from '../../api/endpoints';
@@ -352,6 +358,42 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
       }
     };
   }, [attemptId, doSubmit, recordSecurityViolation, sendSecurityFlagKeepAlive]);
+
+  // Prevent native screenshots/recording while the exam screen is open and
+  // block browser copy/paste, contextual menus, and common capture shortcuts.
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      void preventScreenCaptureAsync('safe-exam').catch(() => undefined);
+      void enableAppSwitcherProtectionAsync(1).catch(() => undefined);
+      return () => { void allowScreenCaptureAsync('safe-exam').catch(() => undefined); };
+    }
+
+    const restricted = (event: Event) => {
+      event.preventDefault();
+      void recordSecurityViolation('Copying, pasting, or selecting exam content is not allowed');
+    };
+    const keydown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (event.key === 'PrintScreen' || ((event.ctrlKey || event.metaKey) && ['c', 'x', 'v', 'p', 's', 'u'].includes(key))) {
+        event.preventDefault();
+        void recordSecurityViolation('A restricted keyboard shortcut was used');
+      }
+    };
+    document.addEventListener('copy', restricted);
+    document.addEventListener('cut', restricted);
+    document.addEventListener('paste', restricted);
+    document.addEventListener('contextmenu', restricted);
+    document.addEventListener('dragstart', restricted);
+    document.addEventListener('keydown', keydown);
+    return () => {
+      document.removeEventListener('copy', restricted);
+      document.removeEventListener('cut', restricted);
+      document.removeEventListener('paste', restricted);
+      document.removeEventListener('contextmenu', restricted);
+      document.removeEventListener('dragstart', restricted);
+      document.removeEventListener('keydown', keydown);
+    };
+  }, [recordSecurityViolation]);
 
   /* ---------------------------------------------------------- answer saving */
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});

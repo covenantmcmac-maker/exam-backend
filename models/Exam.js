@@ -59,6 +59,17 @@ const examSchema = new mongoose.Schema({
       type: Number,
       default: 1
     },
+    // Strict mode blocks copying and captures integrity violations while an
+    // attempt is open. Three violations automatically submit the attempt.
+    safeMode: {
+      type: Boolean,
+      default: false
+    },
+    maxViolations: {
+      type: Number,
+      default: 3,
+      min: 1
+    },
     startDate: Date,
     endDate: Date,
     isPublished: {

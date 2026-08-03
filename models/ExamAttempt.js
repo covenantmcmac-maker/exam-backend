@@ -67,7 +67,17 @@ const examAttemptSchema = new mongoose.Schema({
     default: Date.now
   },
   completedAt: Date,
-  timeSpent: Number
+  timeSpent: Number,
+  violationCount: {
+    type: Number,
+    default: 0
+  },
+  violations: [
+    {
+      type: String,
+      occurredAt: { type: Date, default: Date.now }
+    }
+  ]
 });
 
 module.exports = mongoose.model('ExamAttempt', examAttemptSchema);
