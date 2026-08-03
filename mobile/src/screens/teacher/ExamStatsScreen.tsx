@@ -117,6 +117,7 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
             const student = typeof a.student === 'object' ? a.student : null;
             const pct = Math.round(a.percentage || 0);
             const passed = pct >= passMark;
+            const warningCount = a.securityViolations?.count || 0;
             return (
               <Card key={a._id}>
                 <View style={styles.rowTop}>
@@ -142,7 +143,7 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
                 </View>
 
                 <Text style={styles.meta}>
-                  {a.score}/{a.totalPoints} points · {a.status}
+                  {a.score ?? 0}/{a.totalPoints ?? 0} points · {a.status}
                   {a.completedAt
                     ? ` · ${new Date(a.completedAt).toLocaleDateString(undefined, {
                         day: 'numeric',
@@ -150,6 +151,13 @@ export default function ExamStatsScreen({ route, navigation }: Props) {
                       })}`
                     : ''}
                 </Text>
+
+                {warningCount > 0 && (
+                  <Text style={styles.securityMeta}>
+                    🔒 Safe exam warnings: {warningCount}/3
+                    {a.securityViolations?.autoSubmitted ? ' · Auto-submitted' : ''}
+                  </Text>
+                )}
 
                 <Button
                   title="Delete attempt (allow retake)"
@@ -185,4 +193,5 @@ const makeStyles = (colors: Colors) =>
   pctPill: { paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill },
   pctText: { fontSize: 15, fontWeight: '800' },
   meta: { fontSize: 13, color: colors.textMuted, marginTop: spacing.sm, textTransform: 'capitalize' },
+  securityMeta: { fontSize: 13, color: colors.warning, fontWeight: '700', marginTop: spacing.sm },
 });

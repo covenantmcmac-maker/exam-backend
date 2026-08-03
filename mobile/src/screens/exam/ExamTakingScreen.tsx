@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState,
   BackHandler,
   Pressable,
   ScrollView,
@@ -12,10 +13,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Loading } from '../../components/ui';
 import { useDialog } from '../../components/Dialog';
 import { attemptsApi, examsApi } from '../../api/endpoints';
+import { getToken } from '../../api/client';
+import { API_BASE_URL } from '../../config';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
-import type { Exam, Question } from '../../api/types';
+import type { Exam, Question, SubmitResult } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
 
@@ -27,6 +30,7 @@ interface Slot {
 }
 
 const TEXT_TYPES = ['short-answer', 'essay', 'fill-blank'];
+const MAX_SECURITY_WARNINGS = 3;
 
 function fmt(totalSeconds: number) {
   const s = Math.max(0, totalSeconds);
@@ -52,10 +56,15 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [securityWarnings, setSecurityWarnings] = useState(0);
 
   const submittedRef = useRef(false);
   const attemptIdRef = useRef<string | null>(null);
   const deadlineRef = useRef<number | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const securityWarningsRef = useRef(0);
+  const lastSecurityFlagAtRef = useRef(0);
+  const securityFlaggingRef = useRef(false);
 
   /* ------------------------------------------------------------- bootstrap */
   useEffect(() => {
@@ -63,6 +72,7 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
 
     (async () => {
       try {
+        tokenRef.current = await getToken();
         const examData = await examsApi.take(examId);
         const startRes = await attemptsApi.start(examId);
         if (cancelled) return;
@@ -71,6 +81,10 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
         attemptIdRef.current = attempt._id;
         setAttemptId(attempt._id);
         setExam(examData);
+
+        const initialWarnings = attempt.securityViolations?.count || 0;
+        securityWarningsRef.current = initialWarnings;
+        setSecurityWarnings(initialWarnings);
 
         const nextSlots: Slot[] = (examData.questions || [])
           .filter((q) => q.question && typeof q.question === 'object')
@@ -112,6 +126,23 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   }, [examId]);
 
   /* ----------------------------------------------------------------- submit */
+  const openResult = useCallback(
+    (res: SubmitResult) => {
+      navigation.replace('ExamResult', {
+        showResults: res.showResults,
+        score: res.score,
+        totalPoints: res.totalPoints,
+        percentage: res.percentage,
+        passed: res.passed,
+        timeSpent: res.timeSpent,
+        allowReview: res.allowReview,
+        attemptId: res.attemptId || attemptIdRef.current || undefined,
+        examTitle: exam?.title,
+      });
+    },
+    [exam?.title, navigation]
+  );
+
   const doSubmit = useCallback(
     async (auto: boolean) => {
       const id = attemptIdRef.current;
@@ -121,15 +152,7 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
 
       try {
         const res = await attemptsApi.submit(id);
-        navigation.replace('ExamResult', {
-          showResults: res.showResults,
-          score: res.score,
-          totalPoints: res.totalPoints,
-          percentage: res.percentage,
-          passed: res.passed,
-          timeSpent: res.timeSpent,
-          examTitle: exam?.title,
-        });
+        openResult(res);
       } catch (e) {
         submittedRef.current = false;
         setSubmitting(false);
@@ -139,7 +162,91 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
         );
       }
     },
-    [dialog, exam?.title, navigation]
+    [dialog, openResult]
+  );
+
+  const sendSecurityFlagKeepAlive = useCallback((reason: string) => {
+    const id = attemptIdRef.current;
+    const token = tokenRef.current;
+    if (!id || !token || typeof fetch === 'undefined') return;
+
+    try {
+      void fetch(`${API_BASE_URL}/api/attempts/${id}/security-flag`, {
+        method: 'POST',
+        keepalive: true,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ reason }),
+      });
+    } catch {
+      /* best-effort during page unload */
+    }
+  }, []);
+
+  const recordSecurityViolation = useCallback(
+    async (reason: string, silent = false) => {
+      const id = attemptIdRef.current;
+      if (!id || submittedRef.current || securityFlaggingRef.current) return;
+
+      const now = Date.now();
+      if (now - lastSecurityFlagAtRef.current < 1500) return;
+      lastSecurityFlagAtRef.current = now;
+      securityFlaggingRef.current = true;
+
+      try {
+        const res = await attemptsApi.flagSecurity(id, reason);
+        securityWarningsRef.current = res.warningCount;
+        setSecurityWarnings(res.warningCount);
+
+        if (res.autoSubmitted && res.result) {
+          submittedRef.current = true;
+          setSubmitting(false);
+          if (!silent) {
+            await dialog.notify(
+              'Exam submitted',
+              'You reached the safe exam mode warning limit, so your exam was submitted automatically.'
+            );
+          }
+          openResult(res.result);
+          return;
+        }
+
+        if (!silent) {
+          await dialog.notify(
+            `Safe exam mode warning ${res.warningCount}/${MAX_SECURITY_WARNINGS}`,
+            res.warningsRemaining > 0
+              ? `Do not leave the exam page, switch tabs, or minimize the app. After ${MAX_SECURITY_WARNINGS} warnings, the exam submits automatically.`
+              : 'Warning limit reached. Your exam is being submitted.'
+          );
+        }
+      } catch {
+        // If the warning could not be recorded online, still enforce the
+        // local rule so students cannot bypass safe mode by going offline.
+        const next = securityWarningsRef.current + 1;
+        securityWarningsRef.current = next;
+        setSecurityWarnings(next);
+        if (next >= MAX_SECURITY_WARNINGS) {
+          if (!silent) {
+            await dialog.notify(
+              'Warning limit reached',
+              'Your exam is being submitted automatically.'
+            );
+          }
+          await doSubmit(true);
+        } else if (!silent) {
+          await dialog.notify(
+            `Safe exam mode warning ${next}/${MAX_SECURITY_WARNINGS}`,
+            `Do not leave the exam page, switch tabs, or minimize the app. After ${MAX_SECURITY_WARNINGS} warnings, the exam submits automatically.`
+          );
+        }
+      } finally {
+        securityFlaggingRef.current = false;
+      }
+    },
+    [dialog, doSubmit, openResult]
   );
 
   /* ------------------------------------------------------------------ timer */
@@ -165,33 +272,86 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remaining === null, doSubmit]);
 
-  /* --------------------------------------------- block accidental back-out */
+  /* ------------------------------------------------------------ safe mode */
   useEffect(() => {
-    const confirmExit = () => {
+    if (!attemptId) return;
+
+    const flagExitAttempt = () => {
       if (submittedRef.current) return false;
-      void (async () => {
-        const leave = await dialog.confirm(
-          'Leave the exam?',
-          'Your answers are saved, but the timer keeps running.',
-          { confirmLabel: 'Leave', cancelLabel: 'Stay', destructive: true }
-        );
-        if (leave) navigation.goBack();
-      })();
+      void recordSecurityViolation('Tried to leave the exam page');
       return true;
     };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', confirmExit);
+    const sub = BackHandler.addEventListener('hardwareBackPress', flagExitAttempt);
     const unsub = navigation.addListener('beforeRemove', (e) => {
       if (submittedRef.current || e.data.action.type === 'REPLACE') return;
       e.preventDefault();
-      confirmExit();
+      flagExitAttempt();
     });
 
     return () => {
       sub.remove();
       unsub();
     };
-  }, [dialog, navigation]);
+  }, [attemptId, navigation, recordSecurityViolation]);
+
+  useEffect(() => {
+    if (!attemptId) return;
+
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'inactive' || state === 'background') {
+        void recordSecurityViolation('App was minimized or sent to the background');
+      }
+    });
+
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        void recordSecurityViolation('Browser tab was hidden');
+      }
+    };
+
+    const onWindowBlur = () => {
+      void recordSecurityViolation('Browser window lost focus');
+    };
+
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (submittedRef.current) return;
+
+      const now = Date.now();
+      if (now - lastSecurityFlagAtRef.current >= 1500) {
+        lastSecurityFlagAtRef.current = now;
+        const next = securityWarningsRef.current + 1;
+        securityWarningsRef.current = next;
+        setSecurityWarnings(next);
+        sendSecurityFlagKeepAlive('Page reload or close attempted');
+        if (next >= MAX_SECURITY_WARNINGS) {
+          setTimeout(() => void doSubmit(true), 0);
+        }
+      }
+
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('blur', onWindowBlur);
+      window.addEventListener('beforeunload', onBeforeUnload);
+    }
+
+    return () => {
+      appStateSub.remove();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('blur', onWindowBlur);
+        window.removeEventListener('beforeunload', onBeforeUnload);
+      }
+    };
+  }, [attemptId, doSubmit, recordSecurityViolation, sendSecurityFlagKeepAlive]);
 
   /* ---------------------------------------------------------- answer saving */
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -300,6 +460,12 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
         <View
           style={[styles.progressFill, { width: `${((index + 1) / slots.length) * 100}%` }]}
         />
+      </View>
+
+      <View style={[styles.safeModeBanner, securityWarnings > 0 && styles.safeModeBannerWarn]}>
+        <Text style={[styles.safeModeText, securityWarnings > 0 && styles.safeModeTextWarn]}>
+          🔒 Safe exam mode active · Warnings {securityWarnings}/{MAX_SECURITY_WARNINGS}
+        </Text>
       </View>
 
       {/* Question navigator */}
@@ -452,6 +618,16 @@ const makeStyles = (colors: Colors) =>
 
   progressBar: { height: 3, backgroundColor: colors.border },
   progressFill: { height: 3, backgroundColor: colors.primary },
+  safeModeBanner: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.successLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  safeModeBannerWarn: { backgroundColor: colors.warningLight },
+  safeModeText: { fontSize: 12, fontWeight: '700', color: colors.success, textAlign: 'center' },
+  safeModeTextWarn: { color: colors.warning },
 
   navStrip: { maxHeight: 56, backgroundColor: colors.card },
   navStripInner: {

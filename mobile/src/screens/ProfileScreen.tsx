@@ -1,10 +1,11 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Badge, Button, Card } from '../components/ui';
+import { Badge, Button, Card, ErrorNote, Field } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { useDialog } from '../components/Dialog';
-import { radius, spacing } from '../theme';
+import { authApi } from '../api/endpoints';
+import { spacing } from '../theme';
 import { useColors } from '../context/ThemeContext';
 import type { Colors } from '../theme';
 import { API_BASE_URL, APP_NAME } from '../config';
@@ -26,6 +27,12 @@ export default function ProfileScreen() {
   const dialog = useDialog();
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
 
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [changingPassword, setChangingPassword] = useState(false);
+
   const tint = roleTint[user?.role || 'student'];
   const initials =
     user?.name
@@ -43,9 +50,38 @@ export default function ProfileScreen() {
     if (ok) await logout();
   };
 
+  const changePassword = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      setPasswordError('Fill in all password fields.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPasswordError('New password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('New password and confirmation do not match.');
+      return;
+    }
+
+    setChangingPassword(true);
+    setPasswordError(null);
+    try {
+      await authApi.changePassword(currentPassword, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      await dialog.notify('Password changed', 'You can use your new password next time you log in.');
+    } catch (e) {
+      setPasswordError(e instanceof Error ? e.message : 'Could not change password.');
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Profile</Text>
 
         <Card style={styles.profileCard}>
@@ -71,6 +107,39 @@ export default function ProfileScreen() {
             </Card>
           </Pressable>
         )}
+
+        <Card>
+          <Text style={styles.sectionLabel}>Security</Text>
+          <Text style={styles.securityHint}>
+            Change your password regularly to keep your account safe.
+          </Text>
+          <ErrorNote message={passwordError} />
+          <Field
+            label="Current password"
+            value={currentPassword}
+            onChangeText={setCurrentPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Field
+            label="New password"
+            value={newPassword}
+            onChangeText={setNewPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Field
+            label="Confirm new password"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Button title="Change password" onPress={changePassword} loading={changingPassword} />
+        </Card>
 
         <Card>
           <Text style={styles.sectionLabel}>About</Text>
@@ -119,6 +188,13 @@ const makeStyles = (colors: Colors) =>
     fontWeight: '700',
     color: colors.textLight,
     letterSpacing: 0.5,
+    marginBottom: spacing.md,
+  },
+  securityHint: {
+    fontSize: 13,
+    color: colors.textMuted,
+    lineHeight: 19,
+    marginTop: -spacing.xs,
     marginBottom: spacing.md,
   },
   aboutRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, gap: spacing.lg },

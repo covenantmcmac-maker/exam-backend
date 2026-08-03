@@ -27,6 +27,25 @@ const examAttemptSchema = new mongoose.Schema({
       timeTaken: Number
     }
   ],
+  securityViolations: {
+    count: {
+      type: Number,
+      default: 0
+    },
+    events: [
+      {
+        reason: String,
+        occurredAt: {
+          type: Date,
+          default: Date.now
+        }
+      }
+    ],
+    autoSubmitted: {
+      type: Boolean,
+      default: false
+    }
+  },
   score: {
     type: Number,
     default: 0
