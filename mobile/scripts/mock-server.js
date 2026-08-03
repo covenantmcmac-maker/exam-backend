@@ -38,6 +38,7 @@ const question = {
   points: 2,
   difficulty: 'easy',
   subject: 'Maths',
+  explanation: 'Two plus two equals four.',
 };
 
 const exam = {
@@ -102,10 +103,13 @@ const server = http.createServer((req, res) => {
     // Routes that require a token.
     const needsAuth = [
       'GET /api/auth/me',
+      'PATCH /api/auth/change-password',
       'GET /api/exams/my-exams',
       'POST /api/exams/join',
       'GET /api/attempts/my-attempts',
       'POST /api/attempts/start',
+      'POST /api/attempts/a1/security-flag',
+      'GET /api/attempts/a1/review',
       'GET /api/questions',
       'GET /api/admin/stats',
     ];
@@ -136,6 +140,12 @@ const server = http.createServer((req, res) => {
 
       case 'GET /api/auth/me':
         return send(res, 200, { user: student });
+
+      case 'PATCH /api/auth/change-password':
+        if (body.currentPassword === 'wrong') {
+          return send(res, 401, { message: 'Current password is incorrect' });
+        }
+        return send(res, 200, { message: 'Password changed successfully' });
 
       case 'POST /api/auth/guest-register':
         return send(res, 200, {
@@ -204,6 +214,8 @@ const server = http.createServer((req, res) => {
         return send(res, 200, {
           message: 'Exam submitted successfully',
           showResults: true,
+          allowReview: exam.settings.allowReview,
+          attemptId: 'a1',
           score: 2,
           totalPoints: 2,
           percentage: '100.00',
@@ -211,9 +223,55 @@ const server = http.createServer((req, res) => {
           passed: true,
         });
 
+      case 'POST /api/attempts/a1/security-flag':
+        return send(res, 200, {
+          message: 'Safe exam mode warning recorded',
+          warningCount: 1,
+          warningsRemaining: 2,
+          autoSubmitted: false,
+        });
+
+      case 'GET /api/attempts/a1/review':
+        if (!exam.settings.allowReview) {
+          return send(res, 403, { message: 'Review is not enabled for this exam' });
+        }
+        return send(res, 200, {
+          attemptId: 'a1',
+          exam: {
+            _id: exam._id,
+            title: exam.title,
+            subject: exam.subject,
+            settings: {
+              showResults: exam.settings.showResults,
+              allowReview: exam.settings.allowReview,
+              passingMarks: exam.settings.passingMarks,
+              totalMarks: exam.settings.totalMarks,
+            },
+          },
+          score: 2,
+          totalPoints: 2,
+          percentage: 100,
+          passed: true,
+          timeSpent: 42,
+          questions: [{
+            order: 0,
+            questionId: 'q1',
+            questionText: question.questionText,
+            questionType: question.questionType,
+            points: 2,
+            options: question.options.map(({ _id, text }) => ({ _id, text })),
+            selectedOption: 1,
+            isCorrect: true,
+            pointsEarned: 2,
+            correctOptionIndex: 1,
+            correctAnswer: '4',
+            explanation: question.explanation,
+          }],
+        });
+
       case 'GET /api/attempts/my-attempts':
         return send(res, 200, [
-          { ...attempt, status: 'completed', score: 2, percentage: 100, timeSpent: 42 },
+          { ...attempt, answers: undefined, status: 'completed', score: 2, percentage: 100, timeSpent: 42, canReview: exam.settings.allowReview },
         ]);
 
       case 'GET /api/questions':

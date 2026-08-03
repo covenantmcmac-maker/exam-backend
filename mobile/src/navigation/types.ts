@@ -31,8 +31,11 @@ export type RootStackParamList = {
     passed?: boolean;
     timeSpent?: number;
     showResults: boolean;
+    allowReview?: boolean;
+    attemptId?: string;
     examTitle?: string;
   };
+  ExamReview: { attemptId: string };
   ExamBuilder: { examId?: string } | undefined;
   ExamStats: { examId: string; title?: string };
   QuestionEditor: { questionId?: string } | undefined;

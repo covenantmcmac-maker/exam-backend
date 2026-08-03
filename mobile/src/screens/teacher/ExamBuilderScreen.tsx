@@ -35,6 +35,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [maxAttempts, setMaxAttempts] = useState('1');
   const [shuffle, setShuffle] = useState(false);
   const [showResults, setShowResults] = useState(true);
+  const [allowReview, setAllowReview] = useState(false);
   const [publish, setPublish] = useState(false);
 
   const [bank, setBank] = useState<Question[]>([]);
@@ -69,6 +70,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           setMaxAttempts(String(exam.settings?.maxAttempts ?? 1));
           setShuffle(!!exam.settings?.shuffleQuestions);
           setShowResults(exam.settings?.showResults !== false);
+          setAllowReview(!!exam.settings?.allowReview);
           setPublish(!!exam.settings?.isPublished);
 
           const picked: Record<string, number> = {};
@@ -231,6 +233,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         maxAttempts: parseInt(maxAttempts, 10) || 1,
         shuffleQuestions: shuffle,
         showResults,
+        allowReview,
         isPublished: publish,
       },
     };
@@ -314,6 +317,14 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={showResults}
             onChange={setShowResults}
           />
+          <Toggle
+            label="Allow students to review answers"
+            value={allowReview}
+            onChange={setAllowReview}
+          />
+          <Text style={styles.settingHint}>
+            Reviews show students the correct answer and any explanation you entered after they finish.
+          </Text>
           <Toggle label="Publish immediately" value={publish} onChange={setPublish} />
         </Card>
 
@@ -529,6 +540,7 @@ const makeStyles = (colors: Colors) =>
     paddingVertical: spacing.sm,
   },
   toggleLabel: { fontSize: 15, color: colors.text, flex: 1 },
+  settingHint: { fontSize: 12, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.sm },
   pickHeader: {
     flexDirection: 'row',
     alignItems: 'center',
