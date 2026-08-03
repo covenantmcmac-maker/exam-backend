@@ -180,8 +180,16 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     if (Platform.OS !== 'web') {
       void ScreenCapture.preventScreenCaptureAsync(captureKey).catch(() => undefined);
       const screenshotSub = ScreenCapture.addScreenshotListener(() => { void reportViolation('screenshot'); });
+      // iOS can emit both `inactive` and `background` for one minimise action.
+      // Count that transition once, then re-arm when the exam becomes active again.
+      let backgroundViolationRecorded = false;
       const appStateSub = AppState.addEventListener('change', (state) => {
-        if (state !== 'active') void reportViolation('app-background');
+        if (state === 'active') {
+          backgroundViolationRecorded = false;
+        } else if (!backgroundViolationRecorded) {
+          backgroundViolationRecorded = true;
+          void reportViolation('app-background');
+        }
       });
       return () => {
         screenshotSub.remove();
