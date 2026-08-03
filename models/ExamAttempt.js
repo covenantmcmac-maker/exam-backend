@@ -27,6 +27,25 @@ const examAttemptSchema = new mongoose.Schema({
       timeTaken: Number
     }
   ],
+  securityViolations: {
+    count: {
+      type: Number,
+      default: 0
+    },
+    events: [
+      {
+        reason: String,
+        occurredAt: {
+          type: Date,
+          default: Date.now
+        }
+      }
+    ],
+    autoSubmitted: {
+      type: Boolean,
+      default: false
+    }
+  },
   score: {
     type: Number,
     default: 0
@@ -55,6 +74,16 @@ const examAttemptSchema = new mongoose.Schema({
     occurredAt: { type: Date, default: Date.now }
   }],
   forcedSubmission: { type: Boolean, default: false }
+  violationCount: {
+    type: Number,
+    default: 0
+  },
+  violations: [
+    {
+      type: String,
+      occurredAt: { type: Date, default: Date.now }
+    }
+  ]
 });
 
 module.exports = mongoose.model('ExamAttempt', examAttemptSchema);
