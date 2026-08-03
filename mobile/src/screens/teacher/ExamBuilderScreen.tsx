@@ -35,6 +35,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [maxAttempts, setMaxAttempts] = useState('1');
   const [shuffle, setShuffle] = useState(false);
   const [showResults, setShowResults] = useState(true);
+  const [safeMode, setSafeMode] = useState(false);
   const [publish, setPublish] = useState(false);
 
   const [bank, setBank] = useState<Question[]>([]);
@@ -68,6 +69,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           setMaxAttempts(String(exam.settings?.maxAttempts ?? 1));
           setShuffle(!!exam.settings?.shuffleQuestions);
           setShowResults(exam.settings?.showResults !== false);
+          setSafeMode(!!exam.settings?.safeMode);
           setPublish(!!exam.settings?.isPublished);
 
           const picked: Record<string, number> = {};
@@ -136,6 +138,8 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         maxAttempts: parseInt(maxAttempts, 10) || 1,
         shuffleQuestions: shuffle,
         showResults,
+        safeMode,
+        maxViolations: 3,
         isPublished: publish,
       },
     };
@@ -219,6 +223,17 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={showResults}
             onChange={setShowResults}
           />
+          <Toggle
+            label="Safe exam mode (blocks copying and screenshots)"
+            value={safeMode}
+            onChange={setSafeMode}
+          />
+          {safeMode && (
+            <Text style={styles.safeModeNote}>
+              Students cannot copy or paste. Leaving the exam, capture shortcuts, and other
+              restricted actions count as warnings; the third warning submits the exam.
+            </Text>
+          )}
           <Toggle label="Publish immediately" value={publish} onChange={setPublish} />
         </Card>
 
@@ -322,6 +337,13 @@ const makeStyles = (colors: Colors) =>
     paddingVertical: spacing.sm,
   },
   toggleLabel: { fontSize: 15, color: colors.text, flex: 1 },
+  safeModeNote: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: -spacing.xs,
+    marginBottom: spacing.sm,
+  },
   pickHeader: {
     flexDirection: 'row',
     alignItems: 'center',

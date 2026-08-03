@@ -147,6 +147,12 @@ export const attemptsApi = {
   submit: (attemptId: string) =>
     request<SubmitResult>(`/api/attempts/${attemptId}/submit`, { method: 'POST' }),
 
+  recordViolation: (attemptId: string, type: string) =>
+    request<{ violationCount: number; maxViolations: number; shouldSubmit: boolean }>(
+      `/api/attempts/${attemptId}/violation`,
+      { method: 'POST', body: { type } }
+    ),
+
   myAttempts: () => request<ExamAttempt[]>('/api/attempts/my-attempts'),
 
   grade: (attemptId: string, grades: { questionId: string; pointsEarned: number }[]) =>

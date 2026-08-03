@@ -75,6 +75,49 @@ router.patch('/:attemptId/answer', auth, async (req, res) => {
   }
 });
 
+// RECORD SAFE-MODE VIOLATION
+// The counter is stored on the attempt, not only in the client, so refreshing
+// the app cannot reset the three-warning limit.
+router.post('/:attemptId/violation', auth, async (req, res) => {
+  try {
+    const attempt = await ExamAttempt.findOne({
+      _id: req.params.attemptId,
+      student: req.user._id,
+      status: 'in-progress'
+    }).populate('exam', 'settings');
+
+    if (!attempt) {
+      return res.status(404).json({ message: 'Active attempt not found' });
+    }
+    if (!attempt.exam.settings.safeMode) {
+      return res.status(400).json({ message: 'Safe mode is not enabled for this exam' });
+    }
+
+    const type = typeof req.body.type === 'string' ? req.body.type.slice(0, 64) : 'unknown';
+    // Increment atomically so simultaneous browser events cannot overwrite a
+    // warning and let a student evade the threshold.
+    const updatedAttempt = await ExamAttempt.findOneAndUpdate(
+      { _id: attempt._id, status: 'in-progress' },
+      { $inc: { violationCount: 1 }, $push: { violations: { type } } },
+      { new: true }
+    );
+    if (!updatedAttempt) {
+      return res.status(404).json({ message: 'Active attempt not found' });
+    }
+
+    const maxViolations = Math.max(1, attempt.exam.settings.maxViolations || 3);
+    res.json({
+      message: 'Violation recorded',
+      violationCount: updatedAttempt.violationCount,
+      maxViolations,
+      shouldSubmit: updatedAttempt.violationCount >= maxViolations
+    });
+  } catch (error) {
+    console.error('Safe mode violation error:', error);
+    res.status(500).json({ message: 'Error recording safe mode violation' });
+  }
+});
+
 // SUBMIT EXAM
 router.post('/:attemptId/submit', auth, async (req, res) => {
   try {

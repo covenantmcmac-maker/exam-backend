@@ -47,6 +47,9 @@ export interface ExamSettings {
   showResults: boolean;
   allowReview: boolean;
   maxAttempts: number;
+  /** Blocks copy/paste and submits after the configured integrity violations. */
+  safeMode: boolean;
+  maxViolations: number;
   startDate?: string | null;
   endDate?: string | null;
   isPublished: boolean;
@@ -91,6 +94,8 @@ export interface ExamAttempt {
   startedAt: string;
   completedAt?: string;
   timeSpent?: number;
+  violationCount?: number;
+  violations?: { type: string; occurredAt: string }[];
 }
 
 export interface SubmitResult {

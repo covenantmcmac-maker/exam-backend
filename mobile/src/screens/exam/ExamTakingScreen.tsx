@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState,
   BackHandler,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,6 +11,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  allowScreenCaptureAsync,
+  enableAppSwitcherProtectionAsync,
+  preventScreenCaptureAsync,
+} from 'expo-screen-capture';
 import { Button, Loading } from '../../components/ui';
 import { useDialog } from '../../components/Dialog';
 import { attemptsApi, examsApi } from '../../api/endpoints';
@@ -52,8 +59,12 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Safe-mode questions stay hidden until the student explicitly enters the
+  // protected session (which lets browsers enter fullscreen from a gesture).
+  const [secureStarted, setSecureStarted] = useState(false);
 
   const submittedRef = useRef(false);
+  const lastViolationRef = useRef<{ type: string; at: number } | null>(null);
   const attemptIdRef = useRef<string | null>(null);
   const deadlineRef = useRef<number | null>(null);
 
@@ -76,6 +87,7 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
           .filter((q) => q.question && typeof q.question === 'object')
           .map((q) => ({ question: q.question as Question, points: q.points || 1 }));
         setSlots(nextSlots);
+        if (!examData.settings?.safeMode) setSecureStarted(true);
 
         // Restore any answers already saved on a resumed attempt.
         const restored: Record<string, { option?: number; text?: string }> = {};
@@ -141,6 +153,98 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     },
     [dialog, exam?.title, navigation]
   );
+
+  /* ------------------------------------------------------------ safe mode */
+  const safeModeActive = !!exam?.settings?.safeMode && secureStarted && !submittedRef.current;
+
+  const recordViolation = useCallback(
+    async (type: string) => {
+      if (!safeModeActive || submittedRef.current) return;
+
+      // A single browser action can trigger more than one event (for example,
+      // blur plus visibilitychange). Count it only once.
+      const now = Date.now();
+      const last = lastViolationRef.current;
+      if (last && last.type === type && now - last.at < 1200) return;
+      lastViolationRef.current = { type, at: now };
+
+      const id = attemptIdRef.current;
+      if (!id) return;
+      try {
+        const result = await attemptsApi.recordViolation(id, type);
+        if (result.shouldSubmit) {
+          void dialog.notify(
+            'Exam submitted',
+            `You reached ${result.maxViolations} safe-mode warnings. Your exam is being submitted automatically.`
+          );
+          void doSubmit(true);
+          return;
+        }
+        void dialog.notify(
+          'Safe-mode warning',
+          `${type}. Warning ${result.violationCount} of ${result.maxViolations}. A final warning submits your exam.`
+        );
+      } catch {
+        // Do not reset the local count on a failed request. The next restricted
+        // action will retry against the server-side, persistent counter.
+      }
+    },
+    [dialog, doSubmit, safeModeActive]
+  );
+
+  useEffect(() => {
+    if (!safeModeActive) return;
+
+    if (Platform.OS !== 'web') {
+      void preventScreenCaptureAsync('safe-exam').catch(() => undefined);
+      void enableAppSwitcherProtectionAsync(1).catch(() => undefined);
+      const subscription = AppState.addEventListener('change', (state) => {
+        if (state !== 'active') void recordViolation('Leaving the exam app');
+      });
+      return () => {
+        subscription.remove();
+        void allowScreenCaptureAsync('safe-exam').catch(() => undefined);
+      };
+    }
+
+    const onRestrictedAction = (event: Event) => {
+      event.preventDefault();
+      void recordViolation('Copying, pasting, or selecting exam content is not allowed');
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (
+        event.key === 'PrintScreen' ||
+        (event.ctrlKey || event.metaKey) && ['c', 'x', 'v', 'p', 's', 'u'].includes(key)
+      ) {
+        event.preventDefault();
+        void recordViolation('A restricted keyboard shortcut was used');
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) void recordViolation('You left the exam tab or window');
+    };
+    const onBlur = () => void recordViolation('You left the exam window');
+
+    document.addEventListener('copy', onRestrictedAction);
+    document.addEventListener('cut', onRestrictedAction);
+    document.addEventListener('paste', onRestrictedAction);
+    document.addEventListener('contextmenu', onRestrictedAction);
+    document.addEventListener('dragstart', onRestrictedAction);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('copy', onRestrictedAction);
+      document.removeEventListener('cut', onRestrictedAction);
+      document.removeEventListener('paste', onRestrictedAction);
+      document.removeEventListener('contextmenu', onRestrictedAction);
+      document.removeEventListener('dragstart', onRestrictedAction);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [recordViolation, safeModeActive]);
 
   /* ------------------------------------------------------------------ timer */
   useEffect(() => {
@@ -253,6 +357,36 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
             style={{ marginTop: spacing.lg }}
             onPress={() => navigation.goBack()}
           />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const beginSecureExam = async () => {
+    // Fullscreen can only be requested directly from a user interaction. It is
+    // an additional web guard; native apps use the OS capture protection above.
+    if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.fullscreenElement) {
+      try {
+        await document.documentElement.requestFullscreen?.();
+      } catch {
+        // Some browsers (notably iOS Safari) do not support the API. The copy,
+        // paste, visibility, and shortcut protections still remain active.
+      }
+    }
+    setSecureStarted(true);
+  };
+
+  if (exam?.settings?.safeMode && !secureStarted) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+        <View style={styles.secureIntro}>
+          <Text style={styles.secureIcon}>🔒</Text>
+          <Text style={styles.secureTitle}>Safe exam mode</Text>
+          <Text style={styles.secureText}>
+            Copying, pasting, capture shortcuts, and leaving this exam are restricted. Each
+            warning is saved securely; after 3 warnings your exam is submitted automatically.
+          </Text>
+          <Button title="Enter safe exam" onPress={beginSecureExam} style={styles.secureButton} />
         </View>
       </SafeAreaView>
     );
@@ -419,6 +553,22 @@ const makeStyles = (colors: Colors) =>
   StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+  secureIntro: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  secureIcon: { fontSize: 46, marginBottom: spacing.lg },
+  secureTitle: { fontSize: 23, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
+  secureText: {
+    fontSize: 15,
+    lineHeight: 23,
+    color: colors.textMuted,
+    textAlign: 'center',
+    maxWidth: 440,
+  },
+  secureButton: { marginTop: spacing.xl, minWidth: 210 },
   errorIcon: { fontSize: 44 },
   errorTitle: {
     fontSize: 17,
