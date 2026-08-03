@@ -299,6 +299,7 @@ router.put('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
       if (settings.shuffleQuestions !== undefined) exam.settings.shuffleQuestions = settings.shuffleQuestions;
       if (settings.showResults !== undefined) exam.settings.showResults = settings.showResults;
       if (settings.maxAttempts !== undefined) exam.settings.maxAttempts = settings.maxAttempts;
+      if (settings.safeMode !== undefined) exam.settings.safeMode = settings.safeMode;
       if (settings.startDate !== undefined) exam.settings.startDate = settings.startDate;
       if (settings.endDate !== undefined) exam.settings.endDate = settings.endDate;
       if (settings.isPublished !== undefined) exam.settings.isPublished = settings.isPublished;

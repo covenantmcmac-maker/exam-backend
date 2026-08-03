@@ -36,6 +36,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [shuffle, setShuffle] = useState(false);
   const [showResults, setShowResults] = useState(true);
   const [publish, setPublish] = useState(false);
+  const [safeMode, setSafeMode] = useState(false);
 
   const [bank, setBank] = useState<Question[]>([]);
   const [selected, setSelected] = useState<Record<string, number>>({});
@@ -69,6 +70,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           setShuffle(!!exam.settings?.shuffleQuestions);
           setShowResults(exam.settings?.showResults !== false);
           setPublish(!!exam.settings?.isPublished);
+          setSafeMode(!!exam.settings?.safeMode);
 
           const picked: Record<string, number> = {};
           (exam.questions || []).forEach((q) => {
@@ -137,6 +139,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         shuffleQuestions: shuffle,
         showResults,
         isPublished: publish,
+        safeMode,
       },
     };
 
@@ -219,6 +222,12 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={showResults}
             onChange={setShowResults}
           />
+          <Toggle
+            label="Safe exam mode (block/flag copy, screenshots and leaving app)"
+            value={safeMode}
+            onChange={setSafeMode}
+          />
+          <Text style={styles.settingHelp}>Three recorded violations automatically submit the attempt.</Text>
           <Toggle label="Publish immediately" value={publish} onChange={setPublish} />
         </Card>
 
@@ -322,6 +331,7 @@ const makeStyles = (colors: Colors) =>
     paddingVertical: spacing.sm,
   },
   toggleLabel: { fontSize: 15, color: colors.text, flex: 1 },
+  settingHelp: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginTop: -spacing.xs, marginBottom: spacing.sm },
   pickHeader: {
     flexDirection: 'row',
     alignItems: 'center',

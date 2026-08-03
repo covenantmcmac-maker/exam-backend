@@ -48,7 +48,13 @@ const examAttemptSchema = new mongoose.Schema({
     default: Date.now
   },
   completedAt: Date,
-  timeSpent: Number
+  timeSpent: Number,
+  // Immutable audit trail for safe-mode policy violations.
+  violations: [{
+    type: { type: String, enum: ['copy', 'screenshot', 'app-background', 'paste', 'print-screen'] },
+    occurredAt: { type: Date, default: Date.now }
+  }],
+  forcedSubmission: { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('ExamAttempt', examAttemptSchema);

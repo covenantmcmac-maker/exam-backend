@@ -59,6 +59,11 @@ const examSchema = new mongoose.Schema({
       type: Number,
       default: 1
     },
+    // Locks down the exam client and automatically submits after 3 violations.
+    safeMode: {
+      type: Boolean,
+      default: false
+    },
     startDate: Date,
     endDate: Date,
     isPublished: {
