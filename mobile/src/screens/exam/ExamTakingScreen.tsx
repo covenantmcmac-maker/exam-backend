@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as ScreenCapture from 'expo-screen-capture';
 import {
   allowScreenCaptureAsync,
   enableAppSwitcherProtectionAsync,
@@ -255,6 +256,87 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     [dialog, doSubmit, openResult]
   );
 
+  /* ------------------------------------------------------------ safe mode */
+  const reportViolation = useCallback(async (
+    type: 'copy' | 'paste' | 'screenshot' | 'app-background' | 'print-screen'
+  ) => {
+    const id = attemptIdRef.current;
+    if (!id || submittedRef.current) return;
+    try {
+      const report = await attemptsApi.reportViolation(id, type);
+      if (report.submitted && report.result) {
+        submittedRef.current = true;
+        setSubmitting(true);
+        const result = report.result;
+        navigation.replace('ExamResult', {
+          showResults: result.showResults, score: result.score, totalPoints: result.totalPoints,
+          percentage: result.percentage, passed: result.passed, timeSpent: result.timeSpent,
+          examTitle: exam?.title,
+        });
+        return;
+      }
+      await dialog.notify(
+        'Safe-mode warning',
+        `${report.message} Your exam will be submitted automatically after the third violation.`
+      );
+    } catch {
+      // Do not interrupt a student if a transient network error prevents reporting.
+    }
+  }, [dialog, exam?.title, navigation]);
+
+  useEffect(() => {
+    if (!exam?.settings?.safeMode || !attemptId) return;
+    const captureKey = 'safe-exam';
+    // Native builds prevent capture. The listener also records any screenshot the OS reports.
+    if (Platform.OS !== 'web') {
+      void ScreenCapture.preventScreenCaptureAsync(captureKey).catch(() => undefined);
+      const screenshotSub = ScreenCapture.addScreenshotListener(() => { void reportViolation('screenshot'); });
+      // iOS can emit both `inactive` and `background` for one minimise action.
+      // Count that transition once, then re-arm when the exam becomes active again.
+      let backgroundViolationRecorded = false;
+      const appStateSub = AppState.addEventListener('change', (state) => {
+        if (state === 'active') {
+          backgroundViolationRecorded = false;
+        } else if (!backgroundViolationRecorded) {
+          backgroundViolationRecorded = true;
+          void reportViolation('app-background');
+        }
+      });
+      return () => {
+        screenshotSub.remove();
+        appStateSub.remove();
+        void ScreenCapture.allowScreenCaptureAsync(captureKey).catch(() => undefined);
+      };
+    }
+
+    // Browsers cannot reliably observe OS screenshots. Block copying and known capture keys,
+    // and flag tab/app changes; native apps additionally use OS capture protection above.
+    const blockClipboard = (event: Event) => {
+      event.preventDefault();
+      void reportViolation(event.type === 'paste' ? 'paste' : 'copy');
+    };
+    const blockKey = (event: KeyboardEvent) => {
+      const shortcut = (event.ctrlKey || event.metaKey) && ['c', 'x', 'v', 'p'].includes(event.key.toLowerCase());
+      if (shortcut || event.key === 'PrintScreen') {
+        event.preventDefault();
+        void reportViolation(event.key === 'PrintScreen' ? 'print-screen' : event.key.toLowerCase() === 'v' ? 'paste' : 'copy');
+      }
+    };
+    const hidden = () => { if (document.hidden) void reportViolation('app-background'); };
+    document.addEventListener('copy', blockClipboard as EventListener);
+    document.addEventListener('cut', blockClipboard as EventListener);
+    document.addEventListener('paste', blockClipboard as EventListener);
+    document.addEventListener('keydown', blockKey);
+    document.addEventListener('visibilitychange', hidden);
+    return () => {
+      document.removeEventListener('copy', blockClipboard as EventListener);
+      document.removeEventListener('cut', blockClipboard as EventListener);
+      document.removeEventListener('paste', blockClipboard as EventListener);
+      document.removeEventListener('keydown', blockKey);
+      document.removeEventListener('visibilitychange', hidden);
+    };
+  }, [attemptId, exam?.settings?.safeMode, reportViolation]);
+
   /* ------------------------------------------------------------------ timer */
   useEffect(() => {
     if (remaining === null || submittedRef.current) return;
@@ -482,6 +564,7 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       {/* Header: timer + progress */}
+      {exam?.settings?.safeMode && <View style={styles.safeModeBanner}><Text style={styles.safeModeText}>SAFE MODE · Copying, screenshots, or leaving the exam are recorded. 3 violations submit the exam.</Text></View>}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.examTitle} numberOfLines={1}>
@@ -636,6 +719,8 @@ const makeStyles = (colors: Colors) =>
     marginTop: spacing.md,
   },
 
+  safeModeBanner: { backgroundColor: colors.danger, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
+  safeModeText: { color: colors.white, fontSize: 12, fontWeight: '700', textAlign: 'center', lineHeight: 17 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

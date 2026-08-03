@@ -47,6 +47,7 @@ export interface ExamSettings {
   showResults: boolean;
   allowReview: boolean;
   maxAttempts: number;
+  safeMode: boolean;
   startDate?: string | null;
   endDate?: string | null;
   isPublished: boolean;

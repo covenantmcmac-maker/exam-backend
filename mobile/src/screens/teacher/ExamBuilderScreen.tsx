@@ -37,6 +37,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [showResults, setShowResults] = useState(true);
   const [allowReview, setAllowReview] = useState(false);
   const [publish, setPublish] = useState(false);
+  const [safeMode, setSafeMode] = useState(false);
 
   const [bank, setBank] = useState<Question[]>([]);
   const [selected, setSelected] = useState<Record<string, number>>({});
@@ -72,6 +73,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           setShowResults(exam.settings?.showResults !== false);
           setAllowReview(!!exam.settings?.allowReview);
           setPublish(!!exam.settings?.isPublished);
+          setSafeMode(!!exam.settings?.safeMode);
 
           const picked: Record<string, number> = {};
           (exam.questions || []).forEach((q) => {
@@ -235,6 +237,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         showResults,
         allowReview,
         isPublished: publish,
+        safeMode,
       },
     };
 
@@ -318,6 +321,11 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             onChange={setShowResults}
           />
           <Toggle
+            label="Safe exam mode (block/flag copy, screenshots and leaving app)"
+            value={safeMode}
+            onChange={setSafeMode}
+          />
+          <Text style={styles.settingHelp}>Three recorded violations automatically submit the attempt.</Text>
             label="Allow students to review answers"
             value={allowReview}
             onChange={setAllowReview}
@@ -540,6 +548,7 @@ const makeStyles = (colors: Colors) =>
     paddingVertical: spacing.sm,
   },
   toggleLabel: { fontSize: 15, color: colors.text, flex: 1 },
+  settingHelp: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginTop: -spacing.xs, marginBottom: spacing.sm },
   settingHint: { fontSize: 12, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.sm },
   pickHeader: {
     flexDirection: 'row',

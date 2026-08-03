@@ -68,6 +68,12 @@ const examAttemptSchema = new mongoose.Schema({
   },
   completedAt: Date,
   timeSpent: Number,
+  // Immutable audit trail for safe-mode policy violations.
+  violations: [{
+    type: { type: String, enum: ['copy', 'screenshot', 'app-background', 'paste', 'print-screen'] },
+    occurredAt: { type: Date, default: Date.now }
+  }],
+  forcedSubmission: { type: Boolean, default: false }
   violationCount: {
     type: Number,
     default: 0

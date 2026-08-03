@@ -155,6 +155,11 @@ export const attemptsApi = {
   submit: (attemptId: string) =>
     request<SubmitResult>(`/api/attempts/${attemptId}/submit`, { method: 'POST' }),
 
+  reportViolation: (attemptId: string, type: 'copy' | 'paste' | 'screenshot' | 'app-background' | 'print-screen') =>
+    request<{ message: string; violationCount: number; submitted: boolean; result?: SubmitResult }>(
+      `/api/attempts/${attemptId}/violation`,
+      { method: 'POST', body: { type } }
+    ),
   flagSecurity: (attemptId: string, reason: string) =>
     request<SecurityFlagResult>(`/api/attempts/${attemptId}/security-flag`, {
       method: 'POST',

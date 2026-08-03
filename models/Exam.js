@@ -59,6 +59,7 @@ const examSchema = new mongoose.Schema({
       type: Number,
       default: 1
     },
+    // Locks down the exam client and automatically submits after 3 violations.
     // Strict mode blocks copying and captures integrity violations while an
     // attempt is open. Three violations automatically submit the attempt.
     safeMode: {
