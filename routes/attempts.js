@@ -4,6 +4,129 @@ const Exam = require('../models/Exam');
 const Question = require('../models/Question');
 const { auth, authorize } = require('../middleware/auth');
 
+const MAX_SECURITY_WARNINGS = 3;
+
+function getQuestionId(value) {
+  if (!value) return '';
+  if (value._id) return value._id.toString();
+  return value.toString();
+}
+
+function buildSubmitResult(exam, attempt, message = 'Exam submitted successfully') {
+  const base = {
+    message,
+    showResults: exam.settings.showResults !== false,
+    allowReview: !!exam.settings.allowReview,
+    attemptId: attempt._id,
+    timeSpent: attempt.timeSpent
+  };
+
+  if (exam.settings.showResults === false) {
+    return base;
+  }
+
+  return {
+    ...base,
+    score: attempt.score,
+    totalPoints: attempt.totalPoints,
+    percentage: (attempt.percentage || 0).toFixed(2),
+    passed: attempt.score >= exam.settings.passingMarks
+  };
+}
+
+async function finalizeAttempt(attempt, { message, securityAutoSubmit = false } = {}) {
+  const exam = await Exam.findById(attempt.exam).populate('questions.question');
+  if (!exam) {
+    const err = new Error('Exam not found');
+    err.status = 404;
+    throw err;
+  }
+
+  let totalScore = 0;
+  const examQuestions = exam.questions || [];
+
+  for (let i = 0; i < attempt.answers.length; i++) {
+    const answer = attempt.answers[i];
+    const questionId = getQuestionId(answer.question);
+    const examQ = examQuestions.find(
+      q => q.question && getQuestionId(q.question) === questionId
+    );
+    const question = examQ?.question || await Question.findById(answer.question);
+    if (!question) continue;
+
+    const maxPoints = examQ?.points || question.points || 1;
+
+    if (question.questionType === 'multiple-choice' ||
+        question.questionType === 'true-false') {
+      const correctIndex = (question.options || []).findIndex(o => o.isCorrect);
+      const isCorrect = answer.selectedOption === correctIndex;
+      attempt.answers[i].isCorrect = isCorrect;
+      attempt.answers[i].pointsEarned = isCorrect ? maxPoints : 0;
+      if (isCorrect) totalScore += maxPoints;
+    } else if (question.questionType === 'short-answer' ||
+               question.questionType === 'fill-blank') {
+      const expected = (question.correctAnswer || '').toLowerCase().trim();
+      const given = (answer.textAnswer || '').toLowerCase().trim();
+      const isCorrect = expected !== '' && given === expected;
+      attempt.answers[i].isCorrect = isCorrect;
+      attempt.answers[i].pointsEarned = isCorrect ? maxPoints : 0;
+      if (isCorrect) totalScore += maxPoints;
+    }
+  }
+
+  attempt.totalPoints = attempt.totalPoints || exam.settings.totalMarks || 0;
+  attempt.score = totalScore;
+  attempt.percentage = attempt.totalPoints > 0
+    ? (totalScore / attempt.totalPoints) * 100
+    : 0;
+  attempt.status = 'completed';
+  attempt.completedAt = new Date();
+  attempt.timeSpent = Math.floor(
+    (attempt.completedAt - attempt.startedAt) / 1000
+  );
+
+  if (securityAutoSubmit) {
+    attempt.securityViolations = attempt.securityViolations || {};
+    attempt.securityViolations.autoSubmitted = true;
+  }
+
+  await attempt.save();
+  return { exam, result: buildSubmitResult(exam, attempt, message) };
+}
+
+function sanitizeStudentAttempt(attempt) {
+  const obj = attempt.toObject ? attempt.toObject() : attempt;
+  const exam = obj.exam && typeof obj.exam === 'object' ? obj.exam : null;
+  const showResults = exam?.settings?.showResults !== false;
+  const allowReview = !!exam?.settings?.allowReview;
+
+  obj.canReview = allowReview;
+  delete obj.answers;
+
+  if (!showResults) {
+    obj.resultsHidden = true;
+    delete obj.score;
+    delete obj.percentage;
+  }
+
+  return obj;
+}
+
+function buildCorrectAnswer(question) {
+  if (question.questionType === 'multiple-choice' || question.questionType === 'true-false') {
+    const correctIndex = (question.options || []).findIndex(o => o.isCorrect);
+    return {
+      correctOptionIndex: correctIndex >= 0 ? correctIndex : undefined,
+      correctAnswer: correctIndex >= 0 ? question.options[correctIndex]?.text : question.correctAnswer
+    };
+  }
+
+  return {
+    correctOptionIndex: undefined,
+    correctAnswer: question.correctAnswer || ''
+  };
+}
+
 // START ATTEMPT
 router.post('/start', auth, async (req, res) => {
   try {
@@ -75,46 +198,62 @@ router.patch('/:attemptId/answer', auth, async (req, res) => {
   }
 });
 
-// RECORD SAFE-MODE VIOLATION
-// The counter is stored on the attempt, not only in the client, so refreshing
-// the app cannot reset the three-warning limit.
-router.post('/:attemptId/violation', auth, async (req, res) => {
+// RECORD SAFE EXAM MODE VIOLATION
+router.post('/:attemptId/security-flag', auth, async (req, res) => {
   try {
+    const reason = (req.body.reason || 'Student left the exam page').toString().slice(0, 200);
+
     const attempt = await ExamAttempt.findOne({
       _id: req.params.attemptId,
-      student: req.user._id,
-      status: 'in-progress'
-    }).populate('exam', 'settings');
+      student: req.user._id
+    });
 
     if (!attempt) {
-      return res.status(404).json({ message: 'Active attempt not found' });
-    }
-    if (!attempt.exam.settings.safeMode) {
-      return res.status(400).json({ message: 'Safe mode is not enabled for this exam' });
+      return res.status(404).json({ message: 'Attempt not found' });
     }
 
-    const type = typeof req.body.type === 'string' ? req.body.type.slice(0, 64) : 'unknown';
-    // Increment atomically so simultaneous browser events cannot overwrite a
-    // warning and let a student evade the threshold.
-    const updatedAttempt = await ExamAttempt.findOneAndUpdate(
-      { _id: attempt._id, status: 'in-progress' },
-      { $inc: { violationCount: 1 }, $push: { violations: { type } } },
-      { new: true }
-    );
-    if (!updatedAttempt) {
-      return res.status(404).json({ message: 'Active attempt not found' });
+    if (attempt.status !== 'in-progress') {
+      const exam = await Exam.findById(attempt.exam);
+      return res.json({
+        message: 'Attempt has already been submitted',
+        warningCount: attempt.securityViolations?.count || 0,
+        warningsRemaining: 0,
+        autoSubmitted: !!attempt.securityViolations?.autoSubmitted,
+        result: exam ? buildSubmitResult(exam, attempt) : undefined
+      });
     }
 
-    const maxViolations = Math.max(1, attempt.exam.settings.maxViolations || 3);
+    attempt.securityViolations = attempt.securityViolations || { count: 0, events: [] };
+    attempt.securityViolations.count = (attempt.securityViolations.count || 0) + 1;
+    attempt.securityViolations.events = attempt.securityViolations.events || [];
+    attempt.securityViolations.events.push({ reason, occurredAt: new Date() });
+
+    const warningCount = attempt.securityViolations.count;
+
+    if (warningCount >= MAX_SECURITY_WARNINGS) {
+      const { result } = await finalizeAttempt(attempt, {
+        message: 'Exam auto-submitted after repeated safe exam mode warnings',
+        securityAutoSubmit: true
+      });
+      return res.json({
+        message: 'Exam auto-submitted after repeated safe exam mode warnings',
+        warningCount,
+        warningsRemaining: 0,
+        autoSubmitted: true,
+        result
+      });
+    }
+
+    await attempt.save();
     res.json({
-      message: 'Violation recorded',
-      violationCount: updatedAttempt.violationCount,
-      maxViolations,
-      shouldSubmit: updatedAttempt.violationCount >= maxViolations
+      message: 'Safe exam mode warning recorded',
+      warningCount,
+      warningsRemaining: MAX_SECURITY_WARNINGS - warningCount,
+      autoSubmitted: false
     });
   } catch (error) {
-    console.error('Safe mode violation error:', error);
-    res.status(500).json({ message: 'Error recording safe mode violation' });
+    console.error('Security flag error:', error);
+    res.status(500).json({ message: 'Error recording safe exam mode warning' });
   }
 });
 
@@ -123,79 +262,24 @@ router.post('/:attemptId/submit', auth, async (req, res) => {
   try {
     const attempt = await ExamAttempt.findOne({
       _id: req.params.attemptId,
-      student: req.user._id,
-      status: 'in-progress'
+      student: req.user._id
     });
 
     if (!attempt) {
-      return res.status(404).json({ message: 'Active attempt not found' });
+      return res.status(404).json({ message: 'Attempt not found' });
     }
 
-    const exam = await Exam.findById(attempt.exam)
-      .populate('questions.question');
-
-    let totalScore = 0;
-
-    for (let i = 0; i < attempt.answers.length; i++) {
-      const answer = attempt.answers[i];
-      const question = await Question.findById(answer.question);
-      if (!question) continue;
-
-      const examQ = exam.questions.find(
-        q => q.question._id.toString() === answer.question.toString()
-      );
-      const maxPoints = examQ?.points || question.points || 1;
-
-      if (question.questionType === 'multiple-choice' ||
-          question.questionType === 'true-false') {
-        const correctIndex = question.options.findIndex(o => o.isCorrect);
-        const isCorrect = answer.selectedOption === correctIndex;
-        attempt.answers[i].isCorrect = isCorrect;
-        attempt.answers[i].pointsEarned = isCorrect ? maxPoints : 0;
-        if (isCorrect) totalScore += maxPoints;
-      } else if (question.questionType === 'short-answer' ||
-                 question.questionType === 'fill-blank') {
-        const isCorrect = answer.textAnswer?.toLowerCase().trim() ===
-                         question.correctAnswer?.toLowerCase().trim();
-        attempt.answers[i].isCorrect = isCorrect;
-        attempt.answers[i].pointsEarned = isCorrect ? maxPoints : 0;
-        if (isCorrect) totalScore += maxPoints;
-      }
+    if (attempt.status !== 'in-progress') {
+      const exam = await Exam.findById(attempt.exam);
+      if (!exam) return res.status(404).json({ message: 'Exam not found' });
+      return res.json(buildSubmitResult(exam, attempt, 'Exam already submitted'));
     }
 
-    attempt.score = totalScore;
-    attempt.percentage = attempt.totalPoints > 0
-      ? (totalScore / attempt.totalPoints) * 100
-      : 0;
-    attempt.status = 'completed';
-    attempt.completedAt = new Date();
-    attempt.timeSpent = Math.floor(
-      (attempt.completedAt - attempt.startedAt) / 1000
-    );
-
-    await attempt.save();
-
-    // Check if teacher wants to show results
-    if (exam.settings.showResults) {
-      res.json({
-        message: 'Exam submitted successfully',
-        showResults: true,
-        score: attempt.score,
-        totalPoints: attempt.totalPoints,
-        percentage: attempt.percentage.toFixed(2),
-        timeSpent: attempt.timeSpent,
-        passed: attempt.score >= exam.settings.passingMarks
-      });
-    } else {
-      res.json({
-        message: 'Exam submitted successfully',
-        showResults: false,
-        timeSpent: attempt.timeSpent
-      });
-    }
+    const { result } = await finalizeAttempt(attempt);
+    res.json(result);
   } catch (error) {
     console.error('Submit error:', error);
-    res.status(500).json({ message: 'Error submitting exam' });
+    res.status(error.status || 500).json({ message: error.status ? error.message : 'Error submitting exam' });
   }
 });
 
@@ -209,9 +293,94 @@ router.get('/my-attempts', auth, async (req, res) => {
     .populate('exam', 'title subject settings')
     .sort({ completedAt: -1 });
 
-    res.json(attempts);
+    res.json(attempts.map(sanitizeStudentAttempt));
   } catch (error) {
     res.status(500).json({ message: 'Error fetching attempts' });
+  }
+});
+
+// REVIEW A COMPLETED ATTEMPT (Student)
+router.get('/:attemptId/review', auth, async (req, res) => {
+  try {
+    const attempt = await ExamAttempt.findOne({
+      _id: req.params.attemptId,
+      student: req.user._id,
+      status: { $ne: 'in-progress' }
+    }).populate({
+      path: 'exam',
+      populate: { path: 'questions.question' }
+    });
+
+    if (!attempt) {
+      return res.status(404).json({ message: 'Completed attempt not found' });
+    }
+
+    const exam = attempt.exam;
+    if (!exam?.settings?.allowReview) {
+      return res.status(403).json({ message: 'Review is not enabled for this exam' });
+    }
+
+    const answersByQuestion = new Map(
+      (attempt.answers || []).map(answer => [getQuestionId(answer.question), answer])
+    );
+
+    const questions = (exam.questions || [])
+      .filter(ref => ref.question)
+      .map((ref, order) => {
+        const question = ref.question;
+        const questionId = getQuestionId(question);
+        const answer = answersByQuestion.get(questionId);
+        const { correctOptionIndex, correctAnswer } = buildCorrectAnswer(question);
+
+        return {
+          order,
+          questionId,
+          questionText: question.questionText,
+          questionType: question.questionType,
+          points: ref.points || question.points || 1,
+          options: (question.options || []).map(option => ({
+            _id: option._id,
+            text: option.text
+          })),
+          selectedOption: answer?.selectedOption,
+          textAnswer: answer?.textAnswer,
+          isCorrect: answer?.isCorrect,
+          pointsEarned: answer?.pointsEarned || 0,
+          correctOptionIndex,
+          correctAnswer,
+          explanation: question.explanation || ''
+        };
+      });
+
+    const payload = {
+      attemptId: attempt._id,
+      exam: {
+        _id: exam._id,
+        title: exam.title,
+        subject: exam.subject,
+        settings: {
+          showResults: exam.settings.showResults !== false,
+          allowReview: !!exam.settings.allowReview,
+          passingMarks: exam.settings.passingMarks,
+          totalMarks: exam.settings.totalMarks
+        }
+      },
+      timeSpent: attempt.timeSpent,
+      completedAt: attempt.completedAt,
+      questions
+    };
+
+    if (exam.settings.showResults !== false) {
+      payload.score = attempt.score;
+      payload.totalPoints = attempt.totalPoints;
+      payload.percentage = attempt.percentage;
+      payload.passed = attempt.score >= exam.settings.passingMarks;
+    }
+
+    res.json(payload);
+  } catch (error) {
+    console.error('Review error:', error);
+    res.status(500).json({ message: 'Error loading review' });
   }
 });
 

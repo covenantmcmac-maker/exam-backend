@@ -29,6 +29,7 @@ import QuestionEditorScreen from '../screens/teacher/QuestionEditorScreen';
 
 import ExamTakingScreen from '../screens/exam/ExamTakingScreen';
 import ExamResultScreen from '../screens/exam/ExamResultScreen';
+import ExamReviewScreen from '../screens/exam/ExamReviewScreen';
 import BulkImportScreen from '../screens/teacher/BulkImportScreen';
 import AdminPanelScreen from '../screens/admin/AdminPanelScreen';
 
@@ -187,6 +188,11 @@ export default function RootNavigator() {
               name="ExamResult"
               component={ExamResultScreen}
               options={{ headerShown: false, gestureEnabled: false }}
+            />
+            <RootStack.Screen
+              name="ExamReview"
+              component={ExamReviewScreen}
+              options={{ title: 'Exam review' }}
             />
             <RootStack.Screen name="ExamBuilder" component={ExamBuilderScreen} />
             <RootStack.Screen name="ExamStats" component={ExamStatsScreen} />

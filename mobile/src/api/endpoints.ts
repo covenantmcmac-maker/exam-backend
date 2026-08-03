@@ -4,9 +4,11 @@ import type {
   AdminStats,
   Exam,
   ExamAttempt,
+  ExamReview,
   ExamStats,
   Question,
   Role,
+  SecurityFlagResult,
   SubmitResult,
   User,
 } from './types';
@@ -35,6 +37,12 @@ export const authApi = {
     }),
 
   me: () => request<{ user: User }>('/api/auth/me'),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ message: string }>('/api/auth/change-password', {
+      method: 'PATCH',
+      body: { currentPassword, newPassword },
+    }),
 
   guestRegister: (name: string, email: string, examCode: string) =>
     request<AuthResponse & { examId: string }>('/api/auth/guest-register', {
@@ -147,13 +155,16 @@ export const attemptsApi = {
   submit: (attemptId: string) =>
     request<SubmitResult>(`/api/attempts/${attemptId}/submit`, { method: 'POST' }),
 
-  recordViolation: (attemptId: string, type: string) =>
-    request<{ violationCount: number; maxViolations: number; shouldSubmit: boolean }>(
-      `/api/attempts/${attemptId}/violation`,
-      { method: 'POST', body: { type } }
-    ),
+  flagSecurity: (attemptId: string, reason: string) =>
+    request<SecurityFlagResult>(`/api/attempts/${attemptId}/security-flag`, {
+      method: 'POST',
+      body: { reason },
+    }),
 
   myAttempts: () => request<ExamAttempt[]>('/api/attempts/my-attempts'),
+
+  review: (attemptId: string) =>
+    request<ExamReview>(`/api/attempts/${attemptId}/review`),
 
   grade: (attemptId: string, grades: { questionId: string; pointsEarned: number }[]) =>
     request<{ message: string; attempt: ExamAttempt }>(`/api/attempts/${attemptId}/grade`, {

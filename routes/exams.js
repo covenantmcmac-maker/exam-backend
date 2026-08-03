@@ -221,12 +221,28 @@ router.get('/:id/take', auth, async (req, res) => {
       return res.status(404).json({ message: 'Exam not found' });
     }
 
-    let questions = [...exam.questions];
-    if (exam.settings.shuffleQuestions) {
+    const examObj = exam.toObject();
+    let questions = [...(examObj.questions || [])];
+    if (examObj.settings?.shuffleQuestions) {
       questions = questions.sort(() => Math.random() - 0.5);
     }
 
-    res.json({ ...exam.toObject(), questions });
+    // Never leak answer keys to a student taking an exam. Mongoose projection
+    // removes top-level correctAnswer/explanation above, but nested option
+    // flags still need to be stripped explicitly.
+    questions = questions.map(ref => {
+      if (ref.question && typeof ref.question === 'object') {
+        ref.question.options = (ref.question.options || []).map(option => ({
+          _id: option._id,
+          text: option.text
+        }));
+        delete ref.question.correctAnswer;
+        delete ref.question.explanation;
+      }
+      return ref;
+    });
+
+    res.json({ ...examObj, questions });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching exam' });
   }
@@ -297,7 +313,9 @@ router.put('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
       if (settings.duration !== undefined) exam.settings.duration = settings.duration;
       if (settings.passingMarks !== undefined) exam.settings.passingMarks = settings.passingMarks;
       if (settings.shuffleQuestions !== undefined) exam.settings.shuffleQuestions = settings.shuffleQuestions;
+      if (settings.shuffleOptions !== undefined) exam.settings.shuffleOptions = settings.shuffleOptions;
       if (settings.showResults !== undefined) exam.settings.showResults = settings.showResults;
+      if (settings.allowReview !== undefined) exam.settings.allowReview = settings.allowReview;
       if (settings.maxAttempts !== undefined) exam.settings.maxAttempts = settings.maxAttempts;
       if (settings.safeMode !== undefined) exam.settings.safeMode = settings.safeMode;
       if (settings.maxViolations !== undefined) {
