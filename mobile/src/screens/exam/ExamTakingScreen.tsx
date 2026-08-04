@@ -267,12 +267,7 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
       if (report.submitted && report.result) {
         submittedRef.current = true;
         setSubmitting(true);
-        const result = report.result;
-        navigation.replace('ExamResult', {
-          showResults: result.showResults, score: result.score, totalPoints: result.totalPoints,
-          percentage: result.percentage, passed: result.passed, timeSpent: result.timeSpent,
-          examTitle: exam?.title,
-        });
+        openResult(report.result);
         return;
       }
       await dialog.notify(
@@ -282,7 +277,7 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     } catch {
       // Do not interrupt a student if a transient network error prevents reporting.
     }
-  }, [dialog, exam?.title, navigation]);
+  }, [dialog, openResult]);
 
   useEffect(() => {
     if (!exam?.settings?.safeMode || !attemptId) return;
@@ -564,7 +559,6 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       {/* Header: timer + progress */}
-      {exam?.settings?.safeMode && <View style={styles.safeModeBanner}><Text style={styles.safeModeText}>SAFE MODE · Copying, screenshots, or leaving the exam are recorded. 3 violations submit the exam.</Text></View>}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.examTitle} numberOfLines={1}>
@@ -587,11 +581,13 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
         />
       </View>
 
-      <View style={[styles.safeModeBanner, securityWarnings > 0 && styles.safeModeBannerWarn]}>
-        <Text style={[styles.safeModeText, securityWarnings > 0 && styles.safeModeTextWarn]}>
-          🔒 Safe exam mode active · Warnings {securityWarnings}/{MAX_SECURITY_WARNINGS}
-        </Text>
-      </View>
+      {exam?.settings?.safeMode && (
+        <View style={[styles.safeModeBanner, securityWarnings > 0 && styles.safeModeBannerWarn]}>
+          <Text style={[styles.safeModeText, securityWarnings > 0 && styles.safeModeTextWarn]}>
+            🔒 Safe exam mode · Copying, screenshots, or leaving the exam are recorded · Warnings {securityWarnings}/{MAX_SECURITY_WARNINGS}
+          </Text>
+        </View>
+      )}
 
       {/* Question navigator */}
       <ScrollView
@@ -719,8 +715,6 @@ const makeStyles = (colors: Colors) =>
     marginTop: spacing.md,
   },
 
-  safeModeBanner: { backgroundColor: colors.danger, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
-  safeModeText: { color: colors.white, fontSize: 12, fontWeight: '700', textAlign: 'center', lineHeight: 17 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
