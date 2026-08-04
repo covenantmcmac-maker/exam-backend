@@ -326,6 +326,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             onChange={setSafeMode}
           />
           <Text style={styles.settingHelp}>Three recorded violations automatically submit the attempt.</Text>
+          <Toggle
             label="Allow students to review answers"
             value={allowReview}
             onChange={setAllowReview}

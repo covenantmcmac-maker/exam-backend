@@ -4,20 +4,9 @@ const Exam = require('../models/Exam');
 const Question = require('../models/Question');
 const { auth, authorize } = require('../middleware/auth');
 
-
-/** Grade and close an active attempt. Used for manual and policy submissions. */
-async function finalizeAttempt(attempt, exam, { forced = false } = {}) {
-  let totalScore = 0;
-  for (let i = 0; i < attempt.answers.length; i++) {
-    const answer = attempt.answers[i];
-    const question = await Question.findById(answer.question);
-    if (!question) continue;
-    const examQ = exam.questions.find(q => q.question._id.toString() === answer.question.toString());
-    const maxPoints = examQ?.points || question.points || 1;
-
-    if (question.questionType === 'multiple-choice' || question.questionType === 'true-false') {
-      const correctIndex = question.options.findIndex(o => o.isCorrect);
 const MAX_SECURITY_WARNINGS = 3;
+const MAX_SAFE_MODE_VIOLATIONS = 3;
+const SAFE_MODE_VIOLATION_TYPES = ['copy', 'paste', 'screenshot', 'app-background', 'print-screen'];
 
 function getQuestionId(value) {
   if (!value) return '';
@@ -47,14 +36,8 @@ function buildSubmitResult(exam, attempt, message = 'Exam submitted successfully
   };
 }
 
-async function finalizeAttempt(attempt, { message, securityAutoSubmit = false } = {}) {
-  const exam = await Exam.findById(attempt.exam).populate('questions.question');
-  if (!exam) {
-    const err = new Error('Exam not found');
-    err.status = 404;
-    throw err;
-  }
-
+/** Grade and close an active attempt. Used for manual and policy submissions. */
+async function finalizeAttempt(attempt, exam, { message, forced = false, securityAutoSubmit = false } = {}) {
   let totalScore = 0;
   const examQuestions = exam.questions || [];
 
@@ -76,8 +59,6 @@ async function finalizeAttempt(attempt, { message, securityAutoSubmit = false } 
       attempt.answers[i].isCorrect = isCorrect;
       attempt.answers[i].pointsEarned = isCorrect ? maxPoints : 0;
       if (isCorrect) totalScore += maxPoints;
-    } else if (question.questionType === 'short-answer' || question.questionType === 'fill-blank') {
-      const isCorrect = answer.textAnswer?.toLowerCase().trim() === question.correctAnswer?.toLowerCase().trim();
     } else if (question.questionType === 'short-answer' ||
                question.questionType === 'fill-blank') {
       const expected = (question.correctAnswer || '').toLowerCase().trim();
@@ -88,23 +69,6 @@ async function finalizeAttempt(attempt, { message, securityAutoSubmit = false } 
       if (isCorrect) totalScore += maxPoints;
     }
   }
-  attempt.score = totalScore;
-  attempt.percentage = attempt.totalPoints > 0 ? (totalScore / attempt.totalPoints) * 100 : 0;
-  attempt.status = 'completed';
-  attempt.forcedSubmission = forced;
-  attempt.completedAt = new Date();
-  attempt.timeSpent = Math.floor((attempt.completedAt - attempt.startedAt) / 1000);
-  await attempt.save();
-  return attempt;
-}
-
-function submissionResponse(attempt, exam) {
-  if (exam.settings.showResults) return {
-    message: 'Exam submitted successfully', showResults: true, score: attempt.score,
-    totalPoints: attempt.totalPoints, percentage: attempt.percentage.toFixed(2),
-    timeSpent: attempt.timeSpent, passed: attempt.score >= exam.settings.passingMarks
-  };
-  return { message: 'Exam submitted successfully', showResults: false, timeSpent: attempt.timeSpent };
 
   attempt.totalPoints = attempt.totalPoints || exam.settings.totalMarks || 0;
   attempt.score = totalScore;
@@ -112,6 +76,7 @@ function submissionResponse(attempt, exam) {
     ? (totalScore / attempt.totalPoints) * 100
     : 0;
   attempt.status = 'completed';
+  attempt.forcedSubmission = forced;
   attempt.completedAt = new Date();
   attempt.timeSpent = Math.floor(
     (attempt.completedAt - attempt.startedAt) / 1000
@@ -255,9 +220,6 @@ router.post('/:attemptId/security-flag', auth, async (req, res) => {
       });
     }
 
-    await finalizeAttempt(attempt, exam);
-
-    res.json(submissionResponse(attempt, exam));
     attempt.securityViolations = attempt.securityViolations || { count: 0, events: [] };
     attempt.securityViolations.count = (attempt.securityViolations.count || 0) + 1;
     attempt.securityViolations.events = attempt.securityViolations.events || [];
@@ -266,7 +228,11 @@ router.post('/:attemptId/security-flag', auth, async (req, res) => {
     const warningCount = attempt.securityViolations.count;
 
     if (warningCount >= MAX_SECURITY_WARNINGS) {
-      const { result } = await finalizeAttempt(attempt, {
+      const exam = await Exam.findById(attempt.exam).populate('questions.question');
+      if (!exam) {
+        return res.status(404).json({ message: 'Exam not found' });
+      }
+      const { result } = await finalizeAttempt(attempt, exam, {
         message: 'Exam auto-submitted after repeated safe exam mode warnings',
         securityAutoSubmit: true
       });
@@ -292,6 +258,54 @@ router.post('/:attemptId/security-flag', auth, async (req, res) => {
   }
 });
 
+// REPORT SAFE-MODE VIOLATION
+// The server owns the three-strike decision, so reloading the client cannot reset it.
+router.post('/:attemptId/violation', auth, async (req, res) => {
+  try {
+    const type = req.body.type;
+    if (!SAFE_MODE_VIOLATION_TYPES.includes(type)) {
+      return res.status(400).json({ message: 'Invalid violation type' });
+    }
+
+    const attempt = await ExamAttempt.findOne({
+      _id: req.params.attemptId,
+      student: req.user._id,
+      status: 'in-progress'
+    });
+    if (!attempt) return res.status(404).json({ message: 'Active attempt not found' });
+
+    const exam = await Exam.findById(attempt.exam).populate('questions.question');
+    if (!exam || !exam.settings.safeMode) {
+      return res.status(403).json({ message: 'Safe mode is not enabled for this exam' });
+    }
+
+    attempt.violations.push({ type, occurredAt: new Date() });
+    const violationCount = attempt.violations.length;
+    if (violationCount >= MAX_SAFE_MODE_VIOLATIONS) {
+      const { result } = await finalizeAttempt(attempt, exam, {
+        message: 'Three safe-mode violations recorded. Exam submitted automatically.',
+        forced: true
+      });
+      return res.json({
+        message: 'Three safe-mode violations recorded. Exam submitted automatically.',
+        violationCount,
+        submitted: true,
+        result
+      });
+    }
+
+    await attempt.save();
+    res.json({
+      message: `Safe-mode violation ${violationCount} of ${MAX_SAFE_MODE_VIOLATIONS} recorded.`,
+      violationCount,
+      submitted: false
+    });
+  } catch (error) {
+    console.error('Safe-mode violation error:', error);
+    res.status(500).json({ message: 'Could not record safe-mode violation' });
+  }
+});
+
 // SUBMIT EXAM
 router.post('/:attemptId/submit', auth, async (req, res) => {
   try {
@@ -310,7 +324,10 @@ router.post('/:attemptId/submit', auth, async (req, res) => {
       return res.json(buildSubmitResult(exam, attempt, 'Exam already submitted'));
     }
 
-    const { result } = await finalizeAttempt(attempt);
+    const exam = await Exam.findById(attempt.exam).populate('questions.question');
+    if (!exam) return res.status(404).json({ message: 'Exam not found' });
+
+    const { result } = await finalizeAttempt(attempt, exam);
     res.json(result);
   } catch (error) {
     console.error('Submit error:', error);
@@ -334,36 +351,6 @@ router.get('/my-attempts', auth, async (req, res) => {
   }
 });
 
-// REPORT SAFE-MODE VIOLATION
-// The server owns the three-strike decision, so reloading the client cannot reset it.
-router.post('/:attemptId/violation', auth, async (req, res) => {
-  try {
-    const type = req.body.type;
-    const allowed = ['copy', 'paste', 'screenshot', 'app-background', 'print-screen'];
-    if (!allowed.includes(type)) return res.status(400).json({ message: 'Invalid violation type' });
-
-    const attempt = await ExamAttempt.findOne({
-      _id: req.params.attemptId, student: req.user._id, status: 'in-progress'
-    });
-    if (!attempt) return res.status(404).json({ message: 'Active attempt not found' });
-
-    const exam = await Exam.findById(attempt.exam).populate('questions.question');
-    if (!exam || !exam.settings.safeMode) return res.status(403).json({ message: 'Safe mode is not enabled for this exam' });
-
-    attempt.violations.push({ type, occurredAt: new Date() });
-    const violationCount = attempt.violations.length;
-    if (violationCount >= 3) {
-      await finalizeAttempt(attempt, exam, { forced: true });
-      return res.json({
-        message: 'Three safe-mode violations recorded. Exam submitted automatically.',
-        violationCount, submitted: true, result: submissionResponse(attempt, exam)
-      });
-    }
-    await attempt.save();
-    res.json({ message: `Safe-mode violation ${violationCount} of 3 recorded.`, violationCount, submitted: false });
-  } catch (error) {
-    console.error('Safe-mode violation error:', error);
-    res.status(500).json({ message: 'Could not record safe-mode violation' });
 // REVIEW A COMPLETED ATTEMPT (Student)
 router.get('/:attemptId/review', auth, async (req, res) => {
   try {
