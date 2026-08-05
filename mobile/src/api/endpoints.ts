@@ -176,6 +176,24 @@ export const questionsApi = {
       method: 'POST',
       body: { questionIds },
     }),
+
+  // Practice test from past questions
+  generatePractice: (params: { count?: number; subject?: string; difficulty?: string; type?: string; year?: string; session?: string; examType?: string; category?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; totalMatching: number; count: number; filters?: any; message?: string }>(
+      `/api/questions/past-questions/practice/generate${suffix}`
+    );
+  },
+
+  submitPractice: (answers: { questionId: string; selectedOption?: number; textAnswer?: string }[]) =>
+    request<{ message: string; score: number; totalPoints: number; percentage: string; passed: boolean; results: any[]; totalQuestions: number }>(
+      '/api/questions/past-questions/practice/submit',
+      { method: 'POST', body: { answers } }
+    ),
 };
 
 /* -------------------------------------------------------------- attempts */

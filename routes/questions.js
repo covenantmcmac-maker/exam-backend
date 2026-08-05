@@ -273,6 +273,127 @@ router.get('/past-questions/stats', auth, async (req, res) => {
   }
 });
 
+// GET /api/questions/past-questions/practice/generate - generate random practice set from past questions
+router.get('/past-questions/practice/generate', auth, async (req, res) => {
+  try {
+    const { count = 10, subject, difficulty, type, year, session, examType, category } = req.query;
+
+    const match = { isPastQuestion: true };
+    if (subject) match.subject = subject;
+    if (difficulty) match.difficulty = difficulty;
+    if (type) match.questionType = type;
+    if (category) match.category = category;
+    if (year) match.pastQuestionYear = parseInt(year);
+    if (session) match.pastQuestionSession = session;
+    if (examType) match.pastQuestionExamType = examType;
+
+    const limit = Math.min(Math.max(parseInt(count) || 10, 1), 50);
+
+    const totalMatching = await Question.countDocuments(match);
+    if (totalMatching === 0) {
+      return res.json({ questions: [], totalMatching: 0, count: 0, message: 'No past questions match your filters' });
+    }
+
+    // Random sample
+    const sampled = await Question.aggregate([
+      { $match: match },
+      { $sample: { size: Math.min(limit, totalMatching) } }
+    ]);
+
+    const ids = sampled.map((q) => q._id);
+    const populated = await Question.find({ _id: { $in: ids } })
+      .populate('creator', 'name')
+      .populate('originalCreator', 'name');
+
+    // Preserve random order from sampled
+    const ordered = ids.map((id) => populated.find((p) => p._id.toString() === id.toString())).filter(Boolean);
+
+    res.json({
+      questions: ordered,
+      totalMatching,
+      count: ordered.length,
+      filters: { subject, difficulty, type, year, session, examType, category }
+    });
+  } catch (error) {
+    console.error('Generate practice error:', error);
+    res.status(500).json({ message: 'Error generating practice set' });
+  }
+});
+
+// POST /api/questions/past-questions/practice/submit - grade a practice attempt
+router.post('/past-questions/practice/submit', auth, async (req, res) => {
+  try {
+    const { answers } = req.body; // [{questionId, selectedOption?, textAnswer?}]
+
+    if (!answers || !Array.isArray(answers) || answers.length === 0) {
+      return res.status(400).json({ message: 'No answers submitted' });
+    }
+
+    let score = 0;
+    let totalPoints = 0;
+    const results = [];
+
+    for (const ans of answers) {
+      const q = await Question.findById(ans.questionId);
+      if (!q) continue;
+
+      const maxPoints = q.points || 1;
+      totalPoints += maxPoints;
+
+      let isCorrect = false;
+      let pointsEarned = 0;
+
+      if (q.questionType === 'multiple-choice' || q.questionType === 'true-false') {
+        const correctIdx = q.options.findIndex((o) => o.isCorrect);
+        if (ans.selectedOption !== undefined && ans.selectedOption === correctIdx) {
+          isCorrect = true;
+          pointsEarned = maxPoints;
+        }
+      } else if (q.questionType === 'short-answer' || q.questionType === 'fill-blank') {
+        const expected = (q.correctAnswer || '').toLowerCase().trim();
+        const given = (ans.textAnswer || '').toLowerCase().trim();
+        if (expected && given && expected === given) {
+          isCorrect = true;
+          pointsEarned = maxPoints;
+        }
+      } else {
+        // essay - not auto-graded
+        pointsEarned = 0;
+      }
+
+      score += pointsEarned;
+
+      results.push({
+        questionId: q._id,
+        questionText: q.questionText,
+        isCorrect,
+        pointsEarned,
+        maxPoints,
+        correctAnswer: q.correctAnswer,
+        options: q.options,
+        explanation: q.explanation,
+        yourAnswer: ans
+      });
+    }
+
+    const percentage = totalPoints > 0 ? (score / totalPoints) * 100 : 0;
+    const passed = percentage >= 50;
+
+    res.json({
+      message: 'Practice submitted',
+      score,
+      totalPoints,
+      percentage: percentage.toFixed(2),
+      passed,
+      results,
+      totalQuestions: answers.length
+    });
+  } catch (error) {
+    console.error('Practice submit error:', error);
+    res.status(500).json({ message: 'Error grading practice' });
+  }
+});
+
 // BULK UPLOAD
 router.post(
   '/bulk-upload',

@@ -131,6 +131,7 @@ const server = http.createServer((req, res) => {
       'GET /api/questions/past',
       'GET /api/questions/past-questions',
       'GET /api/questions/past-questions/stats',
+      'GET /api/questions/past-questions/practice/generate',
       'GET /api/admin/stats',
       'GET /api/admin/past-questions',
       'GET /api/admin/past-questions/stats',
@@ -259,6 +260,48 @@ const server = http.createServer((req, res) => {
           overview: { total: 1, subjects: ['Geography'], years: [2022], subjectCount: 1 },
           bySubject: [{ _id: 'Geography', count: 1 }],
           byYear: [{ _id: 2022, count: 1 }],
+        });
+
+      case 'GET /api/questions/past-questions/practice/generate':
+        return send(res, 200, {
+          questions: [pastQuestion, question],
+          totalMatching: 2,
+          count: 2,
+          filters: {},
+        });
+
+      case 'POST /api/questions/past-questions/practice/submit':
+        return send(res, 200, {
+          message: 'Practice submitted',
+          score: 2,
+          totalPoints: 4,
+          percentage: '50.00',
+          passed: true,
+          totalQuestions: 2,
+          results: [
+            {
+              questionId: 'pq1',
+              questionText: pastQuestion.questionText,
+              isCorrect: true,
+              pointsEarned: 2,
+              maxPoints: 2,
+              correctAnswer: 'B',
+              options: pastQuestion.options,
+              explanation: 'Paris is capital',
+              yourAnswer: { selectedOption: 1 },
+            },
+            {
+              questionId: 'q1',
+              questionText: question.questionText,
+              isCorrect: false,
+              pointsEarned: 0,
+              maxPoints: 2,
+              correctAnswer: 'B',
+              options: question.options,
+              explanation: '',
+              yourAnswer: { selectedOption: 0 },
+            },
+          ],
         });
 
       case 'GET /api/questions/q1':

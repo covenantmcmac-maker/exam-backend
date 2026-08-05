@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -19,6 +19,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ExamBuilder'>;
+type BankSource = 'active' | 'myPast' | 'allPast';
 
 export default function ExamBuilderScreen({ route, navigation }: Props) {
   const colors = useColors();
@@ -38,8 +39,12 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [publish, setPublish] = useState(false);
 
   const [bank, setBank] = useState<Question[]>([]);
+  const [bankSource, setBankSource] = useState<BankSource>('active');
+  const [bankLoading, setBankLoading] = useState(false);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [search, setSearch] = useState('');
+  const [subjectFilter, setSubjectFilter] = useState<string>('all');
+  const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -49,13 +54,31 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     navigation.setOptions({ title: isEdit ? 'Edit exam' : 'New exam' });
   }, [isEdit, navigation]);
 
+  const loadBank = useCallback(async (source: BankSource) => {
+    setBankLoading(true);
+    try {
+      let res: { questions: Question[] };
+      if (source === 'active') {
+        res = await questionsApi.list();
+      } else if (source === 'myPast') {
+        res = await questionsApi.listPast();
+      } else {
+        res = await questionsApi.listPastQuestionsPool({});
+      }
+      setBank(res.questions);
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Could not load question bank.');
+    } finally {
+      setBankLoading(false);
+    }
+  }, [dialog]);
+
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const qs = await questionsApi.list();
-        if (!cancelled) setBank(qs.questions);
+        await loadBank(bankSource);
 
         if (examId) {
           const exam = await examsApi.forEdit(examId);
@@ -89,15 +112,53 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     };
   }, [examId]);
 
+  // Reload bank when source changes
+  useEffect(() => {
+    void loadBank(bankSource);
+  }, [bankSource, loadBank]);
+
+  // Ensure selected questions that are not in current bank still appear (by fetching them individually if needed)
+  useEffect(() => {
+    const selectedIds = Object.keys(selected);
+    const missing = selectedIds.filter((id) => !bank.some((q) => q._id === id));
+    if (missing.length === 0 || examId === undefined) return; // Only for edit mode initial load we already merged, but keep logic
+    // Try to fetch missing from all pools
+    (async () => {
+      try {
+        const fetched: Question[] = [];
+        for (const id of missing.slice(0, 20)) {
+          try {
+            const q = await questionsApi.getOne(id);
+            fetched.push(q);
+          } catch {}
+        }
+        if (fetched.length > 0) {
+          setBank((prev) => [...fetched, ...prev]);
+        }
+      } catch {}
+    })();
+  }, [selected, bank, examId]);
+
+  const subjects = useMemo(() => {
+    const set = new Set<string>();
+    for (const q of bank) {
+      if (q.subject) set.add(q.subject);
+    }
+    return Array.from(set).sort();
+  }, [bank]);
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return bank;
-    return bank.filter(
-      (q) =>
+    return bank.filter((q) => {
+      const matchesSearch =
+        !term ||
         q.questionText.toLowerCase().includes(term) ||
-        (q.subject || '').toLowerCase().includes(term)
-    );
-  }, [bank, search]);
+        (q.subject || '').toLowerCase().includes(term);
+      const matchesSubject = subjectFilter === 'all' || (q.subject || '') === subjectFilter;
+      const matchesDiff = difficultyFilter === 'all' || q.difficulty === difficultyFilter;
+      return matchesSearch && matchesSubject && matchesDiff;
+    });
+  }, [bank, search, subjectFilter, difficultyFilter]);
 
   const selectedIds = Object.keys(selected);
   const totalMarks = selectedIds.reduce((sum, id) => sum + (selected[id] || 1), 0);
@@ -109,6 +170,11 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
       else next[q._id] = q.points || 1;
       return next;
     });
+  };
+
+  const updatePoints = (id: string, pts: string) => {
+    const n = parseInt(pts) || 1;
+    setSelected((prev) => ({ ...prev, [id]: n }));
   };
 
   const save = async () => {
@@ -161,7 +227,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     }
   };
 
-  if (loading) return <Loading text="Loading…" />;
+  if (loading) return <Loading text="Loading exam builder…" />;
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
@@ -230,32 +296,91 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             </Text>
           </View>
 
+          <Text style={styles.hint}>Tap to add/remove · Use Past Qs to reuse archived questions</Text>
+
+          <View style={styles.sourceToggle}>
+            <Pressable onPress={() => setBankSource('active')} style={[styles.sourceBtn, bankSource === 'active' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'active' && styles.sourceTextActive]}>📝 My Bank</Text>
+            </Pressable>
+            <Pressable onPress={() => setBankSource('myPast')} style={[styles.sourceBtn, bankSource === 'myPast' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'myPast' && styles.sourceTextActive]}>📚 My Past</Text>
+            </Pressable>
+            <Pressable onPress={() => setBankSource('allPast')} style={[styles.sourceBtn, bankSource === 'allPast' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'allPast' && styles.sourceTextActive]}>🌐 All Past</Text>
+            </Pressable>
+          </View>
+
+          {bankSource !== 'active' && (
+            <View style={styles.pastInfoBox}>
+              <Text style={styles.pastInfoText}>
+                {bankSource === 'myPast'
+                  ? 'Showing your archived past questions. You can reuse them in new exams.'
+                  : 'Showing all teachers’ past questions pool. Great for assembling revision exams.'}
+              </Text>
+            </View>
+          )}
+
           <Field
             value={search}
             onChangeText={setSearch}
-            placeholder="Search your question bank…"
+            placeholder={bankSource === 'active' ? 'Search your bank…' : 'Search past questions…'}
           />
 
-          {bank.length === 0 ? (
+          <View style={styles.filterRow}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm, flexDirection: 'row' }}>
+              <Pressable onPress={() => setSubjectFilter('all')} style={[styles.chip, subjectFilter === 'all' && styles.chipActive]}>
+                <Text style={[styles.chipText, subjectFilter === 'all' && styles.chipTextActive]}>All subjects</Text>
+              </Pressable>
+              {subjects.map((s) => (
+                <Pressable key={s} onPress={() => setSubjectFilter(s)} style={[styles.chip, subjectFilter === s && styles.chipActive]}>
+                  <Text style={[styles.chipText, subjectFilter === s && styles.chipTextActive]}>{s}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+
+          <View style={styles.filterRow}>
+            {['all', 'easy', 'medium', 'hard'].map((d) => (
+              <Pressable key={d} onPress={() => setDifficultyFilter(d)} style={[styles.chip, difficultyFilter === d && styles.chipActive]}>
+                <Text style={[styles.chipText, difficultyFilter === d && styles.chipTextActive]}>{d}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {bankLoading ? (
+            <Text style={styles.emptyBank}>Loading {bankSource === 'active' ? 'bank' : 'past questions'}…</Text>
+          ) : bank.length === 0 ? (
             <Text style={styles.emptyBank}>
-              Your question bank is empty. Add questions from the Questions tab first.
+              {bankSource === 'active'
+                ? 'Your question bank is empty. Add questions from the Questions tab first.'
+                : 'No past questions found in this pool. Move questions to past from Question Bank.'}
             </Text>
+          ) : filtered.length === 0 ? (
+            <Text style={styles.emptyBank}>No matches. Try different filters.</Text>
           ) : (
             filtered.map((q) => {
               const isOn = selected[q._id] !== undefined;
+              const isPast = !!q.isPastQuestion;
               return (
                 <Pressable
                   key={q._id}
                   onPress={() => toggle(q)}
-                  style={[styles.qRow, isOn && styles.qRowOn]}
+                  style={[styles.qRow, isOn && styles.qRowOn, isPast && styles.qRowPast]}
                 >
                   <View style={[styles.check, isOn && styles.checkOn]}>
                     {isOn && <Text style={styles.checkMark}>✓</Text>}
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.qText} numberOfLines={2}>
-                      {q.questionText}
-                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {isPast && (
+                        <View style={styles.pastBadge}>
+                          <Text style={styles.pastBadgeText}>PAST {q.pastQuestionYear || ''}</Text>
+                        </View>
+                      )}
+                      <Text style={styles.qText} numberOfLines={2}>
+                        {q.questionText}
+                      </Text>
+                    </View>
                     <View style={styles.qMetaRow}>
                       <Text
                         style={[
@@ -267,11 +392,39 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
                       </Text>
                       <Text style={styles.qMeta}>· {q.points} pt</Text>
                       {!!q.subject && <Text style={styles.qMeta}>· {q.subject}</Text>}
+                      {q.pastQuestionSession && <Text style={styles.qMeta}>· {q.pastQuestionSession}</Text>}
                     </View>
+                    {isOn && (
+                      <View style={styles.pointsEdit}>
+                        <Text style={styles.pointsLabel}>Points:</Text>
+                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) - 1))} style={styles.ptsBtn}>
+                          <Text style={styles.ptsBtnText}>−</Text>
+                        </Pressable>
+                        <Text style={styles.ptsValue}>{selected[q._id]}</Text>
+                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) + 1))} style={styles.ptsBtn}>
+                          <Text style={styles.ptsBtnText}>+</Text>
+                        </Pressable>
+                      </View>
+                    )}
                   </View>
                 </Pressable>
               );
             })
+          )}
+
+          {selectedIds.length > 0 && (
+            <View style={styles.selectedPreview}>
+              <Text style={styles.selectedTitle}>Selected ({selectedIds.length})</Text>
+              {selectedIds.slice(0, 5).map((id) => {
+                const q = bank.find((x) => x._id === id) || ({ questionText: id, _id: id } as any);
+                return (
+                  <Text key={id} style={styles.selectedItem} numberOfLines={1}>
+                    • {(q as any).questionText?.slice(0, 60) || id} ({selected[id]} pt)
+                  </Text>
+                );
+              })}
+              {selectedIds.length > 5 && <Text style={styles.subMuted}>+ {selectedIds.length - 5} more…</Text>}
+            </View>
           )}
         </Card>
 
@@ -314,6 +467,7 @@ const makeStyles = (colors: Colors) =>
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   section: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.lg },
+  hint: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.md },
   settingsRow: { flexDirection: 'row', gap: spacing.md },
   toggleRow: {
     flexDirection: 'row',
@@ -329,6 +483,18 @@ const makeStyles = (colors: Colors) =>
     marginBottom: spacing.md,
   },
   pickCount: { fontSize: 13, fontWeight: '700', color: colors.primary, marginBottom: spacing.lg },
+  sourceToggle: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  sourceBtn: { flex: 1, paddingVertical: 8, paddingHorizontal: spacing.sm, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, alignItems: 'center' },
+  sourceBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  sourceText: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  sourceTextActive: { color: colors.white },
+  pastInfoBox: { backgroundColor: colors.warningLight, borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.md, borderLeftWidth: 3, borderLeftColor: colors.warning },
+  pastInfoText: { fontSize: 12, color: colors.text, lineHeight: 16 },
+  filterRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  chip: { paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipText: { fontSize: 12, color: colors.textMuted, fontWeight: '600', textTransform: 'capitalize' },
+  chipTextActive: { color: colors.white },
   emptyBank: { fontSize: 14, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.lg },
   qRow: {
     flexDirection: 'row',
@@ -341,6 +507,7 @@ const makeStyles = (colors: Colors) =>
     backgroundColor: colors.card,
   },
   qRowOn: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  qRowPast: { borderLeftWidth: 3, borderLeftColor: colors.warning },
   check: {
     width: 22,
     height: 22,
@@ -353,8 +520,19 @@ const makeStyles = (colors: Colors) =>
   },
   checkOn: { backgroundColor: colors.primary, borderColor: colors.primary },
   checkMark: { color: colors.white, fontSize: 13, fontWeight: '900' },
-  qText: { fontSize: 14, color: colors.text, lineHeight: 20 },
+  qText: { fontSize: 14, color: colors.text, lineHeight: 20, flex: 1 },
   qMetaRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' },
-  qDifficulty: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
-  qMeta: { fontSize: 12, color: colors.textMuted },
+  qDifficulty: { fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
+  qMeta: { fontSize: 11, color: colors.textMuted },
+  pastBadge: { backgroundColor: colors.warningLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill },
+  pastBadgeText: { fontSize: 9, fontWeight: '800', color: colors.warning },
+  pointsEdit: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  pointsLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
+  ptsBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  ptsBtnText: { fontSize: 14, fontWeight: '800', color: colors.text },
+  ptsValue: { fontSize: 13, fontWeight: '700', color: colors.text, minWidth: 16, textAlign: 'center' },
+  selectedPreview: { marginTop: spacing.lg, padding: spacing.md, backgroundColor: colors.bg, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  selectedTitle: { fontSize: 13, fontWeight: '700', color: colors.text, marginBottom: 6 },
+  selectedItem: { fontSize: 12, color: colors.textMuted, marginBottom: 2 },
+  subMuted: { fontSize: 11, color: colors.textLight, marginTop: 4 },
 });

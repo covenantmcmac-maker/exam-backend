@@ -20,6 +20,9 @@ import StudentHomeScreen from '../screens/student/StudentHomeScreen';
 import ResultsScreen from '../screens/student/ResultsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import PastQuestionsScreen from '../screens/PastQuestionsScreen';
+import PracticeSetupScreen from '../screens/student/PracticeSetupScreen';
+import PracticeExamScreen from '../screens/student/PracticeExamScreen';
+import PracticeResultScreen from '../screens/student/PracticeResultScreen';
 
 import TeacherDashboardScreen from '../screens/teacher/TeacherDashboardScreen';
 import TeacherExamsScreen from '../screens/teacher/TeacherExamsScreen';
@@ -211,6 +214,21 @@ export default function RootNavigator() {
               name="PastQuestions"
               component={PastQuestionsScreen}
               options={{ title: 'Past Questions' }}
+            />
+            <RootStack.Screen
+              name="PracticeSetup"
+              component={PracticeSetupScreen}
+              options={{ title: 'Practice Setup' }}
+            />
+            <RootStack.Screen
+              name="PracticeExam"
+              component={PracticeExamScreen}
+              options={{ title: 'Practice Exam', headerShown: false, gestureEnabled: false }}
+            />
+            <RootStack.Screen
+              name="PracticeResult"
+              component={PracticeResultScreen}
+              options={{ title: 'Practice Result' }}
             />
           </>
         )}

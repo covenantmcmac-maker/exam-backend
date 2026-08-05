@@ -113,7 +113,20 @@ export default function PastQuestionsScreen({ navigation }: Props) {
           <Text style={styles.title}>Past Questions</Text>
           <Text style={styles.subtitle}>Archived questions from previous exams</Text>
         </View>
-        <Button title="Close" variant="ghost" size="sm" onPress={() => navigation.goBack()} />
+        <View style={{ gap: spacing.sm }}>
+          <Button title="🎯 Practice Test" size="sm" onPress={() => navigation.navigate('PracticeSetup')} />
+          <Button title="Close" variant="ghost" size="sm" onPress={() => navigation.goBack()} />
+        </View>
+      </View>
+
+      <View style={{ paddingHorizontal: spacing.lg, paddingTop: spacing.md }}>
+        <Card style={{ backgroundColor: colors.primaryLight, borderColor: colors.primary, borderWidth: 1 }}>
+          <Text style={{ fontSize: 14, fontWeight: '700', color: colors.text }}>🎯 Practice Mode</Text>
+          <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, marginBottom: spacing.md, lineHeight: 16 }}>
+            Generate a random mock exam from past questions and test yourself. Instant grading & explanations.
+          </Text>
+          <Button title="Start Practice →" size="sm" onPress={() => navigation.navigate('PracticeSetup')} />
+        </Card>
       </View>
 
       <View style={styles.controls}>
