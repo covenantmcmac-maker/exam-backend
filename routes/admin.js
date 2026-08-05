@@ -17,7 +17,11 @@ router.get('/stats', auth, authorize('admin'), async (req, res) => {
     const totalAdmins = await User.countDocuments({ role: 'admin' });
     const totalExams = await Exam.countDocuments();
     const totalQuestions = await Question.countDocuments();
-    const totalActiveQuestions = await Question.countDocuments({ isPastQuestion: false });
+    // Questions created before the archive feature have no isPastQuestion
+    // field; they are active unless they have been explicitly archived.
+    const totalActiveQuestions = await Question.countDocuments({
+      isPastQuestion: { $ne: true }
+    });
     const totalPastQuestions = await Question.countDocuments({ isPastQuestion: true });
     const totalAttempts = await ExamAttempt.countDocuments();
     const completedAttempts = await ExamAttempt.countDocuments({ status: { $ne: 'in-progress' } });

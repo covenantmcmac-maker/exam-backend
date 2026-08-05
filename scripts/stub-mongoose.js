@@ -26,6 +26,16 @@ function getPath(doc, path) {
   return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), doc);
 }
 
+function setPath(obj, path, value) {
+  const keys = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    cur[keys[i]] = cur[keys[i]] ?? {};
+    cur = cur[keys[i]];
+  }
+  cur[keys[keys.length - 1]] = value;
+}
+
 function matches(doc, filter) {
   if (!filter || Object.keys(filter).length === 0) return true;
   return Object.entries(filter).every(([key, cond]) => {
@@ -45,6 +55,8 @@ function matches(doc, filter) {
           if (!re.test(String(value ?? ''))) return false;
         } else if (op === '$eq') {
           if (!looseEq(value, operand)) return false;
+        } else if (op === '$exists') {
+          if ((value !== undefined) !== Boolean(operand)) return false;
         } else if (op === '$gt') {
           if (!(Number(value) > Number(operand))) return false;
         } else if (op === '$gte') {
@@ -271,16 +283,6 @@ function makeModel(name, schemaDef) {
     return out;
   };
 
-  const setPath = (obj, path, value) => {
-    const keys = path.split('.');
-    let cur = obj;
-    for (let i = 0; i < keys.length - 1; i++) {
-      cur[keys[i]] = cur[keys[i]] ?? {};
-      cur = cur[keys[i]];
-    }
-    cur[keys[keys.length - 1]] = value;
-  };
-
   const populateDoc = (doc, spec) => {
     if (!spec) return doc;
     const { path, select, populate: nested } =
@@ -408,6 +410,19 @@ function makeModel(name, schemaDef) {
     collections.set(name, remaining);
     return Promise.resolve({ deletedCount: before - remaining.length });
   };
+  Model.updateMany = (filter = {}, update = {}) => {
+    let matchedCount = 0;
+    for (const doc of coll(name)) {
+      if (!matches(doc, filter)) continue;
+      matchedCount++;
+      applyUpdate(doc, update);
+    }
+    return Promise.resolve({
+      acknowledged: true,
+      matchedCount,
+      modifiedCount: matchedCount,
+    });
+  };
   Model.countDocuments = (filter = {}) =>
     Promise.resolve(coll(name).filter((d) => matches(d, filter)).length);
   Model.insertMany = (docs) => {
@@ -440,6 +455,22 @@ function makeModel(name, schemaDef) {
           }
         }
         rows = Object.values(out);
+      } else if (stage.$sort) {
+        const keys = Object.keys(stage.$sort);
+        rows.sort((a, b) => {
+          for (const key of keys) {
+            const dir = stage.$sort[key] < 0 ? -1 : 1;
+            const av = getPath(a, key);
+            const bv = getPath(b, key);
+            const cmp = typeof av === 'number' && typeof bv === 'number'
+              ? av - bv
+              : String(av ?? '').localeCompare(String(bv ?? ''));
+            if (cmp !== 0) return cmp * dir;
+          }
+          return 0;
+        });
+      } else if (stage.$limit !== undefined) {
+        rows = rows.slice(0, stage.$limit);
       } else {
         throw new Error(`stub aggregate: unsupported stage ${Object.keys(stage)[0]}`);
       }

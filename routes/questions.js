@@ -132,6 +132,12 @@ const parseWordDocument = async (filePath, userId) => {
   return questions.filter(q => q.questionText !== '');
 };
 
+// Active questions include legacy documents created before isPastQuestion was
+// added. MongoDB's `$ne: true` matches both an explicit false and a missing
+// field, while archived questions continue to require an explicit true.
+const pastQuestionFilter = (value) =>
+  value === 'true' || value === true ? true : { $ne: true };
+
 // Helper to build filter for past questions
 const buildBaseFilter = (req, opts = {}) => {
   const { subject, difficulty, type, isPastQuestion, past } = req.query;
@@ -146,13 +152,15 @@ const buildBaseFilter = (req, opts = {}) => {
   if (difficulty) filter.difficulty = difficulty;
   if (type) filter.questionType = type;
 
-  // Support both ?past=true/false and ?isPastQuestion=true/false
+  // Support both ?past=true/false and ?isPastQuestion=true/false. Treat a
+  // missing isPastQuestion field as active whenever the requested state is
+  // false, including a defaultPast of false.
   if (past !== undefined) {
-    filter.isPastQuestion = past === 'true' || past === true;
+    filter.isPastQuestion = pastQuestionFilter(past);
   } else if (isPastQuestion !== undefined) {
-    filter.isPastQuestion = isPastQuestion === 'true' || isPastQuestion === true;
+    filter.isPastQuestion = pastQuestionFilter(isPastQuestion);
   } else if (opts.defaultPast !== undefined) {
-    filter.isPastQuestion = opts.defaultPast;
+    filter.isPastQuestion = pastQuestionFilter(opts.defaultPast);
   }
 
   // Optional year / session filters for past questions
@@ -673,14 +681,10 @@ router.get('/', auth, authorize('teacher', 'admin'), async (req, res) => {
       ];
     }
 
-    // Past filter logic
+    // Past filter logic. Legacy questions without isPastQuestion belong in
+    // the active bank, so every non-past query means "not explicitly past".
     const pastParam = req.query.past ?? req.query.isPastQuestion;
-    if (pastParam !== undefined) {
-      filter.isPastQuestion = pastParam === 'true' || pastParam === true;
-    } else {
-      // Default: show only active (non-past) questions in main bank
-      filter.isPastQuestion = false;
-    }
+    filter.isPastQuestion = pastQuestionFilter(pastParam ?? false);
 
     if (req.query.year) filter.pastQuestionYear = parseInt(req.query.year);
     if (req.query.session) filter.pastQuestionSession = req.query.session;
