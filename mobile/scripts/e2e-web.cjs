@@ -226,6 +226,27 @@ async function teacherJourney() {
   step('access code card rendered', /ACCESS CODE/.test(exams) && /ABCD1234/.test(exams));
   step('publish state shown', /Live|Draft/.test(exams));
 
+  app.click('+ New');
+  await app.waitForText(/Select all by subject/);
+  const builder = app.rootText();
+  step(
+    'exam builder shows select by subject',
+    /Select all by subject/.test(builder) && /Select all Maths/.test(builder)
+  );
+  app.click('+ Select all Maths (1)');
+  await app.waitForText(/1 selected/);
+  step(
+    'select all by subject selects questions',
+    /1 selected/.test(app.rootText()) && /✓ Maths \(1\/1\)/.test(app.rootText())
+  );
+  const insEx = app.inputs();
+  app.setInput(insEx[0], 'Test Exam');
+  app.click('Create exam');
+  await app.waitForDialog(/Exam created/);
+  step('exam created via builder', /ABCD1234/.test(app.dialogText()));
+  app.clickDialog('OK');
+  await app.waitForText(/My exams/);
+
   app.click('Questions');
   await app.waitForText(/What is 2 \+ 2/);
   const qs = app.rootText();

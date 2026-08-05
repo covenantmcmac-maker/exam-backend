@@ -46,7 +46,8 @@ const processQuestions = (rawQuestions, userId) => {
       subject: row.subject || '',
       category: row.category || '',
       points: parseInt(row.points) || 1,
-      explanation: row.explanation || ''
+      explanation: row.explanation || '',
+      isPastQuestion: false
     };
   }).filter(q => q.questionText !== '');
 };
@@ -93,7 +94,8 @@ const parseWordDocument = async (filePath, userId) => {
         difficulty: 'medium',
         subject: '',
         points: 1,
-        explanation: ''
+        explanation: '',
+        isPastQuestion: false
       };
     } else if (optionMatch && currentQuestion) {
       currentQuestion.options.push({
@@ -129,6 +131,268 @@ const parseWordDocument = async (filePath, userId) => {
 
   return questions.filter(q => q.questionText !== '');
 };
+
+// Helper to build filter for past questions
+const buildBaseFilter = (req, opts = {}) => {
+  const { subject, difficulty, type, isPastQuestion, past } = req.query;
+  const filter = {};
+
+  // creator scoped by default unless explicitly told to show all
+  if (opts.creatorScoped) {
+    filter.creator = req.user._id;
+  }
+
+  if (subject) filter.subject = subject;
+  if (difficulty) filter.difficulty = difficulty;
+  if (type) filter.questionType = type;
+
+  // Support both ?past=true/false and ?isPastQuestion=true/false
+  if (past !== undefined) {
+    filter.isPastQuestion = past === 'true' || past === true;
+  } else if (isPastQuestion !== undefined) {
+    filter.isPastQuestion = isPastQuestion === 'true' || isPastQuestion === true;
+  } else if (opts.defaultPast !== undefined) {
+    filter.isPastQuestion = opts.defaultPast;
+  }
+
+  // Optional year / session filters for past questions
+  if (req.query.year) {
+    filter.pastQuestionYear = parseInt(req.query.year);
+  }
+  if (req.query.session) {
+    filter.pastQuestionSession = req.query.session;
+  }
+  if (req.query.examType) {
+    filter.pastQuestionExamType = req.query.examType;
+  }
+
+  return filter;
+};
+
+// ------------------------------------------------- PAST QUESTIONS ROUTES
+// Must be before /:id routes
+
+// GET /api/questions/past - teacher's own past questions
+router.get('/past', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { page = 1, limit = 10000 } = req.query;
+    const filter = buildBaseFilter(req, { creatorScoped: true, defaultPast: true });
+    // ensure past true even if query override missing
+    filter.isPastQuestion = true;
+
+    const total = await Question.countDocuments(filter);
+    const questions = await Question.find(filter)
+      .sort({ movedToPastAt: -1, createdAt: -1 })
+      .skip((page - 1) * parseInt(limit))
+      .limit(parseInt(limit));
+
+    res.json({ questions, total, pages: Math.ceil(total / parseInt(limit)) });
+  } catch (error) {
+    console.error('Past questions fetch error:', error);
+    res.status(500).json({ message: 'Error fetching past questions' });
+  }
+});
+
+// GET /api/questions/past-questions - public pool of past questions (all creators)
+// Accessible to any authenticated user (students can practice, teachers can browse)
+router.get('/past-questions', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 10000, search } = req.query;
+    const filter = buildBaseFilter(req, { creatorScoped: false, defaultPast: true });
+    filter.isPastQuestion = true;
+
+    if (search) {
+      const regex = new RegExp(search.trim(), 'i');
+      filter.$or = [
+        { questionText: regex },
+        { subject: regex },
+        { category: regex },
+        { tags: regex }
+      ];
+    }
+
+    const total = await Question.countDocuments(filter);
+    const questions = await Question.find(filter)
+      .populate('creator', 'name')
+      .populate('originalCreator', 'name')
+      .sort({ movedToPastAt: -1, pastQuestionYear: -1, createdAt: -1 })
+      .skip((page - 1) * parseInt(limit))
+      .limit(parseInt(limit));
+
+    res.json({ questions, total, pages: Math.ceil(total / parseInt(limit)) });
+  } catch (error) {
+    console.error('Public past questions error:', error);
+    res.status(500).json({ message: 'Error fetching past questions' });
+  }
+});
+
+// GET /api/questions/past-questions/stats - aggregated stats for UI
+router.get('/past-questions/stats', auth, async (req, res) => {
+  try {
+    const match = { isPastQuestion: true };
+    const stats = await Question.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          subjects: { $addToSet: '$subject' },
+          years: { $addToSet: '$pastQuestionYear' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          total: 1,
+          subjects: 1,
+          years: 1,
+          subjectCount: { $size: '$subjects' }
+        }
+      }
+    ]);
+
+    const bySubject = await Question.aggregate([
+      { $match: { isPastQuestion: true } },
+      { $group: { _id: '$subject', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    const byYear = await Question.aggregate([
+      { $match: { isPastQuestion: true, pastQuestionYear: { $ne: null } } },
+      { $group: { _id: '$pastQuestionYear', count: { $sum: 1 } } },
+      { $sort: { _id: -1 } }
+    ]);
+
+    res.json({
+      overview: stats[0] || { total: 0, subjects: [], years: [] },
+      bySubject,
+      byYear
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching past question stats' });
+  }
+});
+
+// GET /api/questions/past-questions/practice/generate - generate random practice set from past questions
+router.get('/past-questions/practice/generate', auth, async (req, res) => {
+  try {
+    const { count = 10, subject, difficulty, type, year, session, examType, category } = req.query;
+
+    const match = { isPastQuestion: true };
+    if (subject) match.subject = subject;
+    if (difficulty) match.difficulty = difficulty;
+    if (type) match.questionType = type;
+    if (category) match.category = category;
+    if (year) match.pastQuestionYear = parseInt(year);
+    if (session) match.pastQuestionSession = session;
+    if (examType) match.pastQuestionExamType = examType;
+
+    const limit = Math.min(Math.max(parseInt(count) || 10, 1), 50);
+
+    const totalMatching = await Question.countDocuments(match);
+    if (totalMatching === 0) {
+      return res.json({ questions: [], totalMatching: 0, count: 0, message: 'No past questions match your filters' });
+    }
+
+    // Random sample
+    const sampled = await Question.aggregate([
+      { $match: match },
+      { $sample: { size: Math.min(limit, totalMatching) } }
+    ]);
+
+    const ids = sampled.map((q) => q._id);
+    const populated = await Question.find({ _id: { $in: ids } })
+      .populate('creator', 'name')
+      .populate('originalCreator', 'name');
+
+    // Preserve random order from sampled
+    const ordered = ids.map((id) => populated.find((p) => p._id.toString() === id.toString())).filter(Boolean);
+
+    res.json({
+      questions: ordered,
+      totalMatching,
+      count: ordered.length,
+      filters: { subject, difficulty, type, year, session, examType, category }
+    });
+  } catch (error) {
+    console.error('Generate practice error:', error);
+    res.status(500).json({ message: 'Error generating practice set' });
+  }
+});
+
+// POST /api/questions/past-questions/practice/submit - grade a practice attempt
+router.post('/past-questions/practice/submit', auth, async (req, res) => {
+  try {
+    const { answers } = req.body; // [{questionId, selectedOption?, textAnswer?}]
+
+    if (!answers || !Array.isArray(answers) || answers.length === 0) {
+      return res.status(400).json({ message: 'No answers submitted' });
+    }
+
+    let score = 0;
+    let totalPoints = 0;
+    const results = [];
+
+    for (const ans of answers) {
+      const q = await Question.findById(ans.questionId);
+      if (!q) continue;
+
+      const maxPoints = q.points || 1;
+      totalPoints += maxPoints;
+
+      let isCorrect = false;
+      let pointsEarned = 0;
+
+      if (q.questionType === 'multiple-choice' || q.questionType === 'true-false') {
+        const correctIdx = q.options.findIndex((o) => o.isCorrect);
+        if (ans.selectedOption !== undefined && ans.selectedOption === correctIdx) {
+          isCorrect = true;
+          pointsEarned = maxPoints;
+        }
+      } else if (q.questionType === 'short-answer' || q.questionType === 'fill-blank') {
+        const expected = (q.correctAnswer || '').toLowerCase().trim();
+        const given = (ans.textAnswer || '').toLowerCase().trim();
+        if (expected && given && expected === given) {
+          isCorrect = true;
+          pointsEarned = maxPoints;
+        }
+      } else {
+        // essay - not auto-graded
+        pointsEarned = 0;
+      }
+
+      score += pointsEarned;
+
+      results.push({
+        questionId: q._id,
+        questionText: q.questionText,
+        isCorrect,
+        pointsEarned,
+        maxPoints,
+        correctAnswer: q.correctAnswer,
+        options: q.options,
+        explanation: q.explanation,
+        yourAnswer: ans
+      });
+    }
+
+    const percentage = totalPoints > 0 ? (score / totalPoints) * 100 : 0;
+    const passed = percentage >= 50;
+
+    res.json({
+      message: 'Practice submitted',
+      score,
+      totalPoints,
+      percentage: percentage.toFixed(2),
+      passed,
+      results,
+      totalQuestions: answers.length
+    });
+  } catch (error) {
+    console.error('Practice submit error:', error);
+    res.status(500).json({ message: 'Error grading practice' });
+  }
+});
 
 // BULK UPLOAD
 router.post(
@@ -216,10 +480,13 @@ router.post(
         return res.status(400).json({ message: 'No questions selected' });
       }
 
-      const result = await Question.deleteMany({
-        _id: { $in: questionIds },
-        creator: req.user._id
-      });
+      // Allow teacher to delete own, admin to delete any? Keep teacher scoped but admin can delete any past too
+      const filter = { _id: { $in: questionIds } };
+      if (req.user.role !== 'admin') {
+        filter.creator = req.user._id;
+      }
+
+      const result = await Question.deleteMany(filter);
 
       res.json({
         message: `Successfully deleted ${result.deletedCount} questions`,
@@ -231,29 +498,192 @@ router.post(
   }
 );
 
+// BULK MOVE TO PAST QUESTIONS
+router.post(
+  '/bulk-move-to-past',
+  auth,
+  authorize('teacher', 'admin'),
+  async (req, res) => {
+    try {
+      const { questionIds, pastQuestionYear, pastQuestionSession, pastQuestionExamType } = req.body;
+
+      if (!questionIds || questionIds.length === 0) {
+        return res.status(400).json({ message: 'No questions selected' });
+      }
+
+      const filter = { _id: { $in: questionIds } };
+      if (req.user.role !== 'admin') {
+        filter.creator = req.user._id;
+      }
+
+      const update = {
+        isPastQuestion: true,
+        movedToPastAt: new Date()
+      };
+      if (pastQuestionYear) update.pastQuestionYear = parseInt(pastQuestionYear) || null;
+      if (pastQuestionSession) update.pastQuestionSession = pastQuestionSession;
+      if (pastQuestionExamType) update.pastQuestionExamType = pastQuestionExamType;
+
+      // Preserve original creator if moving for first time
+      const questionsToMove = await Question.find(filter);
+      for (const q of questionsToMove) {
+        if (!q.originalCreator) {
+          q.originalCreator = q.creator;
+        }
+      }
+
+      // Bulk update
+      const result = await Question.updateMany(filter, {
+        $set: {
+          ...update,
+          // only set originalCreator where it doesn't exist
+        }
+      });
+
+      // Second pass to ensure originalCreator set
+      await Question.updateMany(
+        { ...filter, originalCreator: null },
+        { $set: { originalCreator: req.user._id } }
+      );
+
+      // If year etc provided, already set. Ensure movedToPastAt for each
+      const moved = await Question.find(filter);
+
+      res.json({
+        message: `Successfully moved ${result.modifiedCount} questions to past questions`,
+        modifiedCount: result.modifiedCount,
+        questions: moved
+      });
+    } catch (error) {
+      console.error('Bulk move to past error:', error);
+      res.status(500).json({ message: 'Error moving questions to past questions' });
+    }
+  }
+);
+
+// BULK RESTORE FROM PAST QUESTIONS
+router.post(
+  '/bulk-restore',
+  auth,
+  authorize('teacher', 'admin'),
+  async (req, res) => {
+    try {
+      const { questionIds } = req.body;
+
+      if (!questionIds || questionIds.length === 0) {
+        return res.status(400).json({ message: 'No questions selected' });
+      }
+
+      const filter = { _id: { $in: questionIds }, isPastQuestion: true };
+      if (req.user.role !== 'admin') {
+        filter.creator = req.user._id;
+      }
+
+      const result = await Question.updateMany(filter, {
+        $set: {
+          isPastQuestion: false,
+          movedToPastAt: null
+        },
+        $unset: {
+          pastQuestionYear: '',
+          pastQuestionSession: '',
+          pastQuestionExamType: ''
+        }
+      });
+
+      res.json({
+        message: `Successfully restored ${result.modifiedCount} questions from past questions`,
+        modifiedCount: result.modifiedCount
+      });
+    } catch (error) {
+      console.error('Bulk restore error:', error);
+      res.status(500).json({ message: 'Error restoring questions' });
+    }
+  }
+);
+
 // CREATE SINGLE QUESTION
 router.post('/', auth, authorize('teacher', 'admin'), async (req, res) => {
   try {
-    const question = new Question({
-      ...req.body,
-      creator: req.user._id
-    });
+    const {
+      questionText,
+      questionType,
+      options,
+      correctAnswer,
+      points,
+      difficulty,
+      subject,
+      category,
+      tags,
+      explanation,
+      image,
+      isPastQuestion,
+      pastQuestionYear,
+      pastQuestionSession,
+      pastQuestionExamType
+    } = req.body;
+
+    const questionData = {
+      questionText,
+      questionType,
+      options,
+      correctAnswer,
+      points,
+      difficulty,
+      subject,
+      category,
+      tags,
+      explanation,
+      image,
+      creator: req.user._id,
+      isPastQuestion: !!isPastQuestion,
+      movedToPastAt: isPastQuestion ? new Date() : null
+    };
+
+    if (pastQuestionYear) questionData.pastQuestionYear = parseInt(pastQuestionYear);
+    if (pastQuestionSession) questionData.pastQuestionSession = pastQuestionSession;
+    if (pastQuestionExamType) questionData.pastQuestionExamType = pastQuestionExamType;
+    if (isPastQuestion) questionData.originalCreator = req.user._id;
+
+    const question = new Question(questionData);
     await question.save();
     res.status(201).json(question);
   } catch (error) {
-    res.status(500).json({ message: 'Error creating question' });
+    console.error('Create question error:', error);
+    res.status(500).json({ message: 'Error creating question: ' + error.message });
   }
 });
 
-// GET ALL QUESTIONS
+// GET ALL QUESTIONS (teacher bank - defaults to non-past unless ?past=true or ?isPastQuestion=true)
 router.get('/', auth, authorize('teacher', 'admin'), async (req, res) => {
   try {
-    const { subject, difficulty, type, page = 1, limit = 10000 } = req.query;
-
+    const { subject, difficulty, type, page = 1, limit = 10000, search } = req.query;
     const filter = { creator: req.user._id };
+
     if (subject) filter.subject = subject;
     if (difficulty) filter.difficulty = difficulty;
     if (type) filter.questionType = type;
+
+    if (search) {
+      const regex = new RegExp(search.trim(), 'i');
+      filter.$or = [
+        { questionText: regex },
+        { subject: regex },
+        { category: regex }
+      ];
+    }
+
+    // Past filter logic
+    const pastParam = req.query.past ?? req.query.isPastQuestion;
+    if (pastParam !== undefined) {
+      filter.isPastQuestion = pastParam === 'true' || pastParam === true;
+    } else {
+      // Default: show only active (non-past) questions in main bank
+      filter.isPastQuestion = false;
+    }
+
+    if (req.query.year) filter.pastQuestionYear = parseInt(req.query.year);
+    if (req.query.session) filter.pastQuestionSession = req.query.session;
 
     const total = await Question.countDocuments(filter);
     const questions = await Question.find(filter)
@@ -267,16 +697,142 @@ router.get('/', auth, authorize('teacher', 'admin'), async (req, res) => {
       pages: Math.ceil(total / parseInt(limit))
     });
   } catch (error) {
+    console.error('Fetch questions error:', error);
     res.status(500).json({ message: 'Error fetching questions' });
+  }
+});
+
+// GET SINGLE QUESTION
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'admin') {
+      // teacher can only fetch own, student can fetch if it's a past question
+      if (req.user.role === 'teacher') {
+        filter.creator = req.user._id;
+      } else {
+        filter.isPastQuestion = true;
+      }
+    }
+
+    const question = await Question.findOne(filter)
+      .populate('creator', 'name')
+      .populate('originalCreator', 'name');
+
+    if (!question) {
+      return res.status(404).json({ message: 'Question not found' });
+    }
+
+    // If student, hide correct answer? For practice past questions we may want to show,
+    // but keep explanation visible only if allowed. For now return full.
+    res.json(question);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching question' });
+  }
+});
+
+// MOVE SINGLE QUESTION TO PAST
+router.patch('/:id/move-to-past', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { pastQuestionYear, pastQuestionSession, pastQuestionExamType } = req.body;
+
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'admin') {
+      filter.creator = req.user._id;
+    }
+
+    const question = await Question.findOne(filter);
+    if (!question) {
+      return res.status(404).json({ message: 'Question not found' });
+    }
+
+    if (question.isPastQuestion) {
+      return res.status(400).json({ message: 'Question is already in past questions' });
+    }
+
+    question.isPastQuestion = true;
+    question.movedToPastAt = new Date();
+    if (!question.originalCreator) question.originalCreator = question.creator;
+
+    if (pastQuestionYear !== undefined) {
+      question.pastQuestionYear = parseInt(pastQuestionYear) || null;
+    }
+    if (pastQuestionSession !== undefined) question.pastQuestionSession = pastQuestionSession;
+    if (pastQuestionExamType !== undefined) question.pastQuestionExamType = pastQuestionExamType;
+
+    await question.save();
+
+    res.json({
+      message: 'Question moved to past questions successfully',
+      question
+    });
+  } catch (error) {
+    console.error('Move to past error:', error);
+    res.status(500).json({ message: 'Error moving question to past questions' });
+  }
+});
+
+// RESTORE SINGLE QUESTION FROM PAST
+router.patch('/:id/restore', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const filter = { _id: req.params.id, isPastQuestion: true };
+    if (req.user.role !== 'admin') {
+      filter.creator = req.user._id;
+    }
+
+    const question = await Question.findOne(filter);
+    if (!question) {
+      return res.status(404).json({ message: 'Past question not found' });
+    }
+
+    question.isPastQuestion = false;
+    question.movedToPastAt = null;
+    question.pastQuestionYear = null;
+    question.pastQuestionSession = null;
+    question.pastQuestionExamType = null;
+
+    await question.save();
+
+    res.json({
+      message: 'Question restored from past questions successfully',
+      question
+    });
+  } catch (error) {
+    console.error('Restore error:', error);
+    res.status(500).json({ message: 'Error restoring question' });
   }
 });
 
 // UPDATE QUESTION
 router.put('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
   try {
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'admin') {
+      filter.creator = req.user._id;
+    }
+
+    // Prevent overriding creator/isPastQuestion via body without explicit handling
+    const allowedFields = { ...req.body };
+    delete allowedFields.creator;
+    delete allowedFields.originalCreator;
+    delete allowedFields.createdAt;
+
+    // If isPastQuestion being set via update, handle movedToPastAt
+    if (allowedFields.isPastQuestion === true) {
+      allowedFields.movedToPastAt = new Date();
+      if (allowedFields.pastQuestionYear) {
+        allowedFields.pastQuestionYear = parseInt(allowedFields.pastQuestionYear) || null;
+      }
+    } else if (allowedFields.isPastQuestion === false) {
+      allowedFields.movedToPastAt = null;
+      allowedFields.pastQuestionYear = null;
+      allowedFields.pastQuestionSession = null;
+      allowedFields.pastQuestionExamType = null;
+    }
+
     const question = await Question.findOneAndUpdate(
-      { _id: req.params.id, creator: req.user._id },
-      req.body,
+      filter,
+      allowedFields,
       { new: true }
     );
     if (!question) {
@@ -284,6 +840,7 @@ router.put('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
     }
     res.json(question);
   } catch (error) {
+    console.error('Update error:', error);
     res.status(500).json({ message: 'Error updating question' });
   }
 });
@@ -291,10 +848,12 @@ router.put('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
 // DELETE QUESTION
 router.delete('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
   try {
-    const question = await Question.findOneAndDelete({
-      _id: req.params.id,
-      creator: req.user._id
-    });
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'admin') {
+      filter.creator = req.user._id;
+    }
+
+    const question = await Question.findOneAndDelete(filter);
     if (!question) {
       return res.status(404).json({ message: 'Question not found' });
     }

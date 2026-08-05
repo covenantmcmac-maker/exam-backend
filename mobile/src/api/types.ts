@@ -1,5 +1,88 @@
 export type Role = 'student' | 'teacher' | 'admin';
 
+export type ExamSource = 'teacher' | 'past';
+
+export interface ExamPricing {
+  entryFee: number;
+  reviewFee: number;
+  currency: string;
+}
+
+export interface AppConfig {
+  currency: string;
+  currencySymbol: string;
+  defaultEntryFee: number;
+  defaultReviewFee: number;
+  paymentsConfigured: boolean;
+  paymentsDevMode: boolean;
+  paystackPublicKey: string;
+}
+
+export type PaymentPurpose = 'entry' | 'review';
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'expired';
+
+export interface Payment {
+  _id: string;
+  student: User | string;
+  exam: Exam | string;
+  attempt?: ExamAttempt | string | null;
+  purpose: PaymentPurpose;
+  amount: number;
+  currency: string;
+  provider: 'paystack' | 'sandbox';
+  reference: string;
+  status: PaymentStatus;
+  paidAt?: string;
+  createdAt?: string;
+}
+
+export interface InitiatePaymentResult {
+  message: string;
+  payment: Payment;
+  authorizationUrl: string | null;
+  devMode: boolean;
+}
+
+export interface VerifyPaymentResult {
+  payment: Payment;
+  paid: boolean;
+}
+
+/** One entry in the paid past-questions library. */
+export interface PastExam {
+  _id: string;
+  title: string;
+  description?: string;
+  subject?: string;
+  year?: number;
+  source: ExamSource;
+  questionCount: number;
+  settings: {
+    duration: number;
+    totalMarks: number;
+    passingMarks: number;
+    maxAttempts: number;
+    allowReview: boolean;
+  };
+  pricing: ExamPricing;
+  purchasedEntry: boolean;
+  completedCount: number;
+  maxAttempts: number;
+  attemptsLeft: number;
+  inProgressAttempt: { _id: string } | null;
+  startable: boolean;
+  endsAt?: string | null;
+}
+
+export interface AdminPaymentsResult {
+  payments: Payment[];
+  totals: {
+    totalRevenue: number;
+    entryCount: number;
+    reviewCount: number;
+  };
+}
+
 export interface User {
   id?: string;
   _id?: string;
@@ -36,6 +119,25 @@ export interface Question {
   explanation?: string;
   image?: string;
   createdAt?: string;
+  // Past Questions feature
+  isPastQuestion?: boolean;
+  movedToPastAt?: string | null;
+  pastQuestionYear?: number | null;
+  pastQuestionSession?: string | null;
+  pastQuestionExamType?: string | null;
+  originalCreator?: { _id?: string; name?: string } | string | null;
+  creator?: { _id?: string; name?: string } | string;
+}
+
+export interface PastQuestionsStats {
+  overview: {
+    total: number;
+    subjects: string[];
+    years: number[];
+    subjectCount?: number;
+  };
+  bySubject: { _id: string; count: number }[];
+  byYear: { _id: number; count: number }[];
 }
 
 export interface ExamSettings {
@@ -47,6 +149,7 @@ export interface ExamSettings {
   showResults: boolean;
   allowReview: boolean;
   maxAttempts: number;
+  safeMode: boolean;
   startDate?: string | null;
   endDate?: string | null;
   isPublished: boolean;
@@ -64,6 +167,9 @@ export interface Exam {
   title: string;
   description?: string;
   subject?: string;
+  source?: ExamSource;
+  year?: number;
+  pricing?: ExamPricing;
   creator?: { _id?: string; name?: string } | string;
   questions: ExamQuestionRef[];
   settings: ExamSettings;
@@ -79,28 +185,77 @@ export interface AttemptAnswer {
   pointsEarned?: number;
 }
 
+export interface SecurityViolations {
+  count: number;
+  autoSubmitted?: boolean;
+  events?: { reason?: string; occurredAt?: string }[];
+}
+
 export interface ExamAttempt {
   _id: string;
   exam: Exam | string;
   student: User | string;
-  answers: AttemptAnswer[];
-  score: number;
-  totalPoints: number;
-  percentage: number;
+  answers?: AttemptAnswer[];
+  score?: number;
+  totalPoints?: number;
+  percentage?: number;
   status: 'in-progress' | 'completed' | 'timed-out' | 'graded';
   startedAt: string;
   completedAt?: string;
   timeSpent?: number;
+  securityViolations?: SecurityViolations;
+  canReview?: boolean;
+  resultsHidden?: boolean;
 }
 
 export interface SubmitResult {
   message: string;
   showResults: boolean;
+  allowReview?: boolean;
+  attemptId?: string;
   score?: number;
   totalPoints?: number;
   percentage?: string;
   timeSpent?: number;
   passed?: boolean;
+}
+
+export interface SecurityFlagResult {
+  message: string;
+  warningCount: number;
+  warningsRemaining: number;
+  autoSubmitted: boolean;
+  result?: SubmitResult;
+}
+
+export interface ReviewQuestion {
+  order: number;
+  questionId: string;
+  questionText: string;
+  questionType: QuestionType;
+  points: number;
+  options: QuestionOption[];
+  selectedOption?: number;
+  textAnswer?: string;
+  isCorrect?: boolean;
+  pointsEarned?: number;
+  correctOptionIndex?: number;
+  correctAnswer?: string;
+  explanation?: string;
+}
+
+export interface ExamReview {
+  attemptId: string;
+  exam: Pick<Exam, '_id' | 'title' | 'subject'> & {
+    settings: Pick<ExamSettings, 'showResults' | 'allowReview' | 'passingMarks' | 'totalMarks'>;
+  };
+  score?: number;
+  totalPoints?: number;
+  percentage?: number;
+  passed?: boolean;
+  timeSpent?: number;
+  completedAt?: string;
+  questions: ReviewQuestion[];
 }
 
 export interface ExamStats {
@@ -122,4 +277,13 @@ export interface AdminStats {
   totalQuestions: number;
   totalAttempts: number;
   completedAttempts: number;
+  payments: {
+    total: number;
+    entryCount: number;
+    reviewCount: number;
+    totalRevenue: number;
+    entryRevenue: number;
+    reviewRevenue: number;
+    currency: string;
+  };
 }

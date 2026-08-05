@@ -28,7 +28,13 @@ app.use(cors({
   ],
   credentials: true
 }));
-app.use(express.json());
+// `verify` keeps the raw body so Paystack webhook signatures can be checked
+// against exactly what the gateway sent.
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Connect to MongoDB
@@ -51,12 +57,18 @@ app.get('/', (req, res) => {
   res.json({ message: 'Exam Platform API is running!' });
 });
 
+// Public app config (currency, defaults, payment mode — no secrets).
+app.get('/api/config', (req, res) => {
+  res.json(require('./services/paystack').publicConfig());
+});
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/questions', require('./routes/questions'));
 app.use('/api/exams', require('./routes/exams'));
 app.use('/api/attempts', require('./routes/attempts'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/payments', require('./routes/payments'));
 
 // Error handling
 app.use((err, req, res, next) => {
