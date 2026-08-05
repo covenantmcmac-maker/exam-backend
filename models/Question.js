@@ -39,7 +39,10 @@ const questionSchema = new mongoose.Schema({
     enum: ['easy', 'medium', 'hard'],
     default: 'medium'
   },
-  subject: String,
+  subject: {
+    type: String,
+    default: 'General'
+  },
   category: String,
   tags: [String],
   explanation: String,
