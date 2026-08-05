@@ -127,16 +127,44 @@ export const examsApi = {
 /* ------------------------------------------------------------- questions */
 
 export const questionsApi = {
-  list: (params: { subject?: string; difficulty?: string; type?: string } = {}) => {
+  list: (params: { subject?: string; difficulty?: string; type?: string; past?: boolean; isPastQuestion?: boolean; search?: string; year?: string; session?: string } = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
-      if (v) qs.append(k, v);
+      if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
     });
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<{ questions: Question[]; total: number; pages: number }>(
       `/api/questions${suffix}`
     );
   },
+
+  listPast: (params: { subject?: string; difficulty?: string; type?: string; search?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, v);
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; total: number; pages: number }>(
+      `/api/questions/past${suffix}`
+    );
+  },
+
+  listPastQuestionsPool: (params: { subject?: string; difficulty?: string; type?: string; search?: string; year?: string; session?: string; examType?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, v);
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; total: number; pages: number }>(
+      `/api/questions/past-questions${suffix}`
+    );
+  },
+
+  pastStats: () =>
+    request<import('./types').PastQuestionsStats>('/api/questions/past-questions/stats'),
+
+  getOne: (id: string) =>
+    request<Question>(`/api/questions/${id}`),
 
   create: (payload: Partial<Question>) =>
     request<Question>('/api/questions', { method: 'POST', body: payload }),
@@ -155,6 +183,48 @@ export const questionsApi = {
 
   bulkUpload: (file: UploadableFile) =>
     uploadFile<{ message: string; count: number }>('/api/questions/bulk-upload', file),
+
+  // Past Questions actions
+  moveToPast: (id: string, meta?: { pastQuestionYear?: number; pastQuestionSession?: string; pastQuestionExamType?: string }) =>
+    request<{ message: string; question: Question }>(`/api/questions/${id}/move-to-past`, {
+      method: 'PATCH',
+      body: meta || {},
+    }),
+
+  restore: (id: string) =>
+    request<{ message: string; question: Question }>(`/api/questions/${id}/restore`, {
+      method: 'PATCH',
+    }),
+
+  bulkMoveToPast: (questionIds: string[], meta?: { pastQuestionYear?: number; pastQuestionSession?: string; pastQuestionExamType?: string }) =>
+    request<{ message: string; modifiedCount: number; questions: Question[] }>('/api/questions/bulk-move-to-past', {
+      method: 'POST',
+      body: { questionIds, ...meta },
+    }),
+
+  bulkRestore: (questionIds: string[]) =>
+    request<{ message: string; modifiedCount: number }>('/api/questions/bulk-restore', {
+      method: 'POST',
+      body: { questionIds },
+    }),
+
+  // Practice test from past questions
+  generatePractice: (params: { count?: number; subject?: string; difficulty?: string; type?: string; year?: string; session?: string; examType?: string; category?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; totalMatching: number; count: number; filters?: any; message?: string }>(
+      `/api/questions/past-questions/practice/generate${suffix}`
+    );
+  },
+
+  submitPractice: (answers: { questionId: string; selectedOption?: number; textAnswer?: string }[]) =>
+    request<{ message: string; score: number; totalPoints: number; percentage: string; passed: boolean; results: any[]; totalQuestions: number }>(
+      '/api/questions/past-questions/practice/submit',
+      { method: 'POST', body: { answers } }
+    ),
 };
 
 /* -------------------------------------------------------------- attempts */
@@ -229,8 +299,19 @@ export const paymentsApi = {
 
 /* ----------------------------------------------------------------- admin */
 
+export interface AdminPastStats {
+  totalPast: number;
+  byYear: { _id: number; count: number }[];
+  bySubject: { _id: string; count: number }[];
+  byTeacher: { _id: string; count: number; name?: string; email?: string }[];
+  bySession: { _id: string; count: number }[];
+  byExamType: { _id: string; count: number }[];
+  byDifficulty: { _id: string; count: number }[];
+  recent: { _id: string; questionText: string; subject?: string; pastQuestionYear?: number; movedToPastAt?: string; creator?: { name?: string } }[];
+}
+
 export const adminApi = {
-  stats: () => request<AdminStats>('/api/admin/stats'),
+  stats: () => request<AdminStats & { totalActiveQuestions?: number; totalPastQuestions?: number; pastByYear?: { _id: number; count: number }[]; pastBySubject?: { _id: string; count: number }[] }>('/api/admin/stats'),
 
   users: (params: { role?: string; search?: string } = {}) => {
     const qs = new URLSearchParams();
@@ -263,4 +344,31 @@ export const adminApi = {
 
   removeAttempt: (id: string) =>
     request<{ message: string }>(`/api/admin/attempts/${id}`, { method: 'DELETE' }),
+
+  // Past Questions admin
+  pastQuestions: (params: { subject?: string; year?: string; session?: string; examType?: string; teacher?: string; search?: string; page?: string; limit?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, String(v));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; total: number; pages: number }>(`/api/admin/past-questions${suffix}`);
+  },
+
+  pastStats: () => request<AdminPastStats>('/api/admin/past-questions/stats'),
+
+  updatePastQuestion: (id: string, payload: { pastQuestionYear?: number | null; pastQuestionSession?: string; pastQuestionExamType?: string; subject?: string; category?: string }) =>
+    request<{ message: string; question: Question }>(`/api/admin/past-questions/${id}`, { method: 'PATCH', body: payload }),
+
+  restorePastQuestion: (id: string) =>
+    request<{ message: string; question: Question }>(`/api/admin/past-questions/${id}/restore`, { method: 'PATCH' }),
+
+  bulkRestorePast: (questionIds: string[]) =>
+    request<{ message: string; modifiedCount: number }>(`/api/admin/past-questions/bulk-restore`, { method: 'POST', body: { questionIds } }),
+
+  removePastQuestion: (id: string) =>
+    request<{ message: string }>(`/api/admin/past-questions/${id}`, { method: 'DELETE' }),
+
+  bulkDeletePast: (questionIds: string[]) =>
+    request<{ message: string; deletedCount: number }>(`/api/admin/past-questions/bulk-delete`, { method: 'POST', body: { questionIds } }),
 };

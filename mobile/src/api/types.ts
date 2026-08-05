@@ -119,6 +119,25 @@ export interface Question {
   explanation?: string;
   image?: string;
   createdAt?: string;
+  // Past Questions feature
+  isPastQuestion?: boolean;
+  movedToPastAt?: string | null;
+  pastQuestionYear?: number | null;
+  pastQuestionSession?: string | null;
+  pastQuestionExamType?: string | null;
+  originalCreator?: { _id?: string; name?: string } | string | null;
+  creator?: { _id?: string; name?: string } | string;
+}
+
+export interface PastQuestionsStats {
+  overview: {
+    total: number;
+    subjects: string[];
+    years: number[];
+    subjectCount?: number;
+  };
+  bySubject: { _id: string; count: number }[];
+  byYear: { _id: number; count: number }[];
 }
 
 export interface ExamSettings {

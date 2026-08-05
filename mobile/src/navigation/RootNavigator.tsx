@@ -19,6 +19,13 @@ import GuestJoinScreen from '../screens/auth/GuestJoinScreen';
 import StudentHomeScreen from '../screens/student/StudentHomeScreen';
 import ResultsScreen from '../screens/student/ResultsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+// Archive of past questions (question-level, our feature)
+import PastQuestionsArchiveScreen from '../screens/PastQuestionsScreen';
+// Monetised past exam papers (exam-level, main feature)
+import PastExamPapersScreen from '../screens/student/PastQuestionsScreen';
+import PracticeSetupScreen from '../screens/student/PracticeSetupScreen';
+import PracticeExamScreen from '../screens/student/PracticeExamScreen';
+import PracticeResultScreen from '../screens/student/PracticeResultScreen';
 
 import TeacherDashboardScreen from '../screens/teacher/TeacherDashboardScreen';
 import TeacherExamsScreen from '../screens/teacher/TeacherExamsScreen';
@@ -30,7 +37,6 @@ import QuestionEditorScreen from '../screens/teacher/QuestionEditorScreen';
 import ExamTakingScreen from '../screens/exam/ExamTakingScreen';
 import ExamResultScreen from '../screens/exam/ExamResultScreen';
 import ExamReviewScreen from '../screens/exam/ExamReviewScreen';
-import PastQuestionsScreen from '../screens/student/PastQuestionsScreen';
 import { paymentsApi } from '../api/endpoints';
 import { useDialog } from '../components/Dialog';
 import BulkImportScreen from '../screens/teacher/BulkImportScreen';
@@ -86,8 +92,13 @@ function StudentFlow() {
       />
       <StudentTabs.Screen
         name="PastQuestions"
-        component={PastQuestionsScreen}
-        options={{ tabBarIcon: icon('📚') }}
+        component={PastExamPapersScreen}
+        options={{ title: 'Past Qs', tabBarIcon: icon('📚'), tabBarLabel: 'Past Qs' }}
+      />
+      <StudentTabs.Screen
+        name="QuestionArchive"
+        component={PastQuestionsArchiveScreen}
+        options={{ title: 'Archive', tabBarIcon: icon('🗂️'), tabBarLabel: 'Archive' }}
       />
       <StudentTabs.Screen
         name="Results"
@@ -179,9 +190,6 @@ export default function RootNavigator() {
   const colors = useColors();
   const navReady = useRef(false);
 
-  // A guest who joined with an access code lands straight in the exam.
-  // The auth screens unmount the moment `user` is set, so the jump has to
-  // happen here, once the signed-in stack is actually mounted.
   const goToPendingExam = useCallback(() => {
     if (!pendingExamId || !navReady.current || !navigationRef.isReady()) return;
     const examId = pendingExamId;
@@ -257,6 +265,31 @@ export default function RootNavigator() {
               name="AdminPanel"
               component={AdminPanelScreen}
               options={{ title: 'Admin panel' }}
+            />
+            <RootStack.Screen
+              name="PastQuestions"
+              component={PastExamPapersScreen}
+              options={{ title: 'Past Questions' }}
+            />
+            <RootStack.Screen
+              name="PastQuestionsArchive"
+              component={PastQuestionsArchiveScreen}
+              options={{ title: 'Past Questions Archive' }}
+            />
+            <RootStack.Screen
+              name="PracticeSetup"
+              component={PracticeSetupScreen}
+              options={{ title: 'Practice Setup' }}
+            />
+            <RootStack.Screen
+              name="PracticeExam"
+              component={PracticeExamScreen}
+              options={{ title: 'Practice Exam', headerShown: false, gestureEnabled: false }}
+            />
+            <RootStack.Screen
+              name="PracticeResult"
+              component={PracticeResultScreen}
+              options={{ title: 'Practice Result' }}
             />
           </>
         )}

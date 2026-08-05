@@ -10,6 +10,7 @@ export type StudentTabParamList = {
   Home: undefined;
   PastQuestions: undefined;
   Results: undefined;
+  PastQuestions: undefined;
   Profile: undefined;
 };
 
@@ -42,4 +43,9 @@ export type RootStackParamList = {
   QuestionEditor: { questionId?: string } | undefined;
   BulkImport: undefined;
   AdminPanel: undefined;
+  PastQuestions: undefined;
+  PastQuestionDetail: { questionId: string } | undefined;
+  PracticeSetup: undefined;
+  PracticeExam: { questions?: import('../api/types').Question[]; filters?: any; count?: number } | undefined;
+  PracticeResult: { score: number; totalPoints: number; percentage: string; passed: boolean; results: any[]; totalQuestions: number };
 };

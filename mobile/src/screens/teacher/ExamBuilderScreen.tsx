@@ -20,6 +20,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ExamBuilder'>;
+type BankSource = 'active' | 'myPast' | 'allPast';
 
 export default function ExamBuilderScreen({ route, navigation }: Props) {
   const colors = useColors();
@@ -51,9 +52,12 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [currencySymbol, setCurrencySymbol] = useState('₦');
 
   const [bank, setBank] = useState<Question[]>([]);
+  const [bankSource, setBankSource] = useState<BankSource>('active');
+  const [bankLoading, setBankLoading] = useState(false);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [search, setSearch] = useState('');
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
+  const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -63,13 +67,31 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     navigation.setOptions({ title: isEdit ? 'Edit exam' : 'New exam' });
   }, [isEdit, navigation]);
 
+  const loadBank = useCallback(async (source: BankSource) => {
+    setBankLoading(true);
+    try {
+      let res: { questions: Question[] };
+      if (source === 'active') {
+        res = await questionsApi.list();
+      } else if (source === 'myPast') {
+        res = await questionsApi.listPast();
+      } else {
+        res = await questionsApi.listPastQuestionsPool({});
+      }
+      setBank(res.questions);
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Could not load question bank.');
+    } finally {
+      setBankLoading(false);
+    }
+  }, [dialog]);
+
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const qs = await questionsApi.list();
-        if (!cancelled) setBank(qs.questions);
+        await loadBank(bankSource);
 
         const cfg = await configApi.get();
         if (!cancelled) setCurrencySymbol(cfg.currencySymbol || '₦');
@@ -101,12 +123,13 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           });
           setSelected(picked);
         } else {
-          // Prefill the platform's default fees so the price is always
-          // visible: past papers → ₦300 entry + ₦500 review; teacher exams
-          // → ₦500 review (can be set to 0 for free review).
-          setReviewFee(String(cfg.defaultReviewFee ?? 500));
-          if (route.params?.source === 'past') {
-            setEntryFee(String(cfg.defaultEntryFee ?? 300));
+          // Prefill the platform's default fees
+          const cfg2 = await configApi.get().catch(() => null as any);
+          if (cfg2) {
+            setReviewFee(String(cfg2.defaultReviewFee ?? 500));
+            if (route.params?.source === 'past') {
+              setEntryFee(String(cfg2.defaultEntryFee ?? 300));
+            }
           }
         }
       } catch (e) {
@@ -120,6 +143,10 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
       cancelled = true;
     };
   }, [examId]);
+
+  useEffect(() => {
+    void loadBank(bankSource);
+  }, [bankSource, loadBank]);
 
   const subjects = useMemo(() => {
     const counts = new Map<string, number>();
@@ -147,9 +174,11 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         (q.subject || '').toLowerCase().includes(term);
       const matchesSubject =
         effectiveSubject === 'all' || (q.subject || '').trim() === effectiveSubject;
-      return matchesTerm && matchesSubject;
+      const matchesDifficulty =
+        difficultyFilter === 'all' || q.difficulty === difficultyFilter;
+      return matchesTerm && matchesSubject && matchesDifficulty;
     });
-  }, [bank, search, effectiveSubject]);
+  }, [bank, search, effectiveSubject, difficultyFilter]);
 
   const isSubjectFullySelected = useCallback(
     (subjName: string) => {
@@ -235,6 +264,11 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
       else next[q._id] = q.points || 1;
       return next;
     });
+  };
+
+  const updatePoints = (id: string, pts: string) => {
+    const n = Math.max(1, parseInt(pts) || 1);
+    setSelected((prev) => ({ ...prev, [id]: n }));
   };
 
   const save = async () => {
@@ -460,12 +494,46 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             </Text>
           </View>
 
+          <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: spacing.md }}>Tap to add/remove · Use Past Qs to reuse archived questions (question-level) + Past Papers are monetised exam-level</Text>
+
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+            <Pressable onPress={() => setBankSource('active')} style={[styles.sourceBtn, bankSource === 'active' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'active' && styles.sourceTextActive]}>📝 My Bank</Text>
+            </Pressable>
+            <Pressable onPress={() => setBankSource('myPast')} style={[styles.sourceBtn, bankSource === 'myPast' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'myPast' && styles.sourceTextActive]}>📚 My Past</Text>
+            </Pressable>
+            <Pressable onPress={() => setBankSource('allPast')} style={[styles.sourceBtn, bankSource === 'allPast' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'allPast' && styles.sourceTextActive]}>🌐 All Past</Text>
+            </Pressable>
+          </View>
+
+          {bankSource !== 'active' && (
+            <View style={{ backgroundColor: colors.warningLight, borderRadius: 8, padding: 8, marginBottom: spacing.md, borderLeftWidth: 3, borderLeftColor: colors.warning }}>
+              <Text style={{ fontSize: 12, color: colors.text, lineHeight: 16 }}>
+                {bankSource === 'myPast'
+                  ? 'Showing your archived past questions (question-level). You can reuse them in new exams.'
+                  : 'Showing all teachers’ past questions pool (question-level). Great for assembling revision exams.'}
+              </Text>
+            </View>
+          )}
+
           <Field
             value={search}
             onChangeText={setSearch}
-            placeholder="Search your question bank…"
+            placeholder={bankSource === 'active' ? 'Search your bank…' : 'Search past questions…'}
             style={{ marginBottom: spacing.sm }}
           />
+
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+            {['all', 'easy', 'medium', 'hard'].map((d) => (
+              <Pressable key={d} onPress={() => setDifficultyFilter(d)} style={[styles.chip, difficultyFilter === d && styles.chipActive]}>
+                <Text style={[styles.chipText, difficultyFilter === d && styles.chipTextActive]}>{d}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {bankLoading && <Text style={styles.emptyBank}>Loading {bankSource === 'active' ? 'bank' : 'past questions'}…</Text>}
 
           {subjects.length > 0 && (
             <ScrollView
@@ -574,30 +642,40 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             </View>
           )}
 
-          {bank.length === 0 ? (
+          {bank.length === 0 && !bankLoading ? (
             <Text style={styles.emptyBank}>
               Your question bank is empty. Add questions from the Questions tab first.
             </Text>
-          ) : filtered.length === 0 ? (
+          ) : filtered.length === 0 && !bankLoading ? (
             <Text style={styles.emptyBank}>
               No questions match your filter.
             </Text>
-          ) : (
+          ) : !bankLoading ? (
             filtered.map((q) => {
               const isOn = selected[q._id] !== undefined;
+              const isPast = !!(q as any).isPastQuestion;
+              const pastYear = (q as any).pastQuestionYear;
+              const pastSession = (q as any).pastQuestionSession;
               return (
                 <Pressable
                   key={q._id}
                   onPress={() => toggle(q)}
-                  style={[styles.qRow, isOn && styles.qRowOn]}
+                  style={[styles.qRow, isOn && styles.qRowOn, isPast && { borderLeftWidth: 3, borderLeftColor: colors.warning }]}
                 >
                   <View style={[styles.check, isOn && styles.checkOn]}>
                     {isOn && <Text style={styles.checkMark}>✓</Text>}
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.qText} numberOfLines={2}>
-                      {q.questionText}
-                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {isPast && (
+                        <View style={{ backgroundColor: colors.warningLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 }}>
+                          <Text style={{ fontSize: 9, fontWeight: '800', color: colors.warning }}>PAST {pastYear || ''}</Text>
+                        </View>
+                      )}
+                      <Text style={styles.qText} numberOfLines={2}>
+                        {q.questionText}
+                      </Text>
+                    </View>
                     <View style={styles.qMetaRow}>
                       <Text
                         style={[
@@ -609,12 +687,25 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
                       </Text>
                       <Text style={styles.qMeta}>· {q.points} pt</Text>
                       {!!q.subject && <Text style={styles.qMeta}>· {q.subject}</Text>}
+                      {pastSession && <Text style={styles.qMeta}>· {pastSession}</Text>}
                     </View>
+                    {isOn && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <Text style={{ fontSize: 12, color: colors.textMuted, fontWeight: '600' }}>Points:</Text>
+                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) - 1))} style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }}>
+                          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.text }}>−</Text>
+                        </Pressable>
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: colors.text, minWidth: 16, textAlign: 'center' }}>{selected[q._id]}</Text>
+                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) + 1))} style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }}>
+                          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.text }}>+</Text>
+                        </Pressable>
+                      </View>
+                    )}
                   </View>
                 </Pressable>
               );
             })
-          )}
+          ) : null}
         </Card>
 
         <Button
@@ -791,4 +882,8 @@ const makeStyles = (colors: Colors) =>
     fontWeight: '700',
     color: colors.text,
   },
+  sourceBtn: { flex: 1, paddingVertical: 8, paddingHorizontal: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, alignItems: 'center' },
+  sourceBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  sourceText: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  sourceTextActive: { color: colors.white },
 });

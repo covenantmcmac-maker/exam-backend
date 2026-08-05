@@ -10,7 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Badge, Button, Card, Field, Loading, StatTile } from '../../components/ui';
-import { adminApi } from '../../api/endpoints';
+import { adminApi, AdminPastStats } from '../../api/endpoints';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
 import type { NavigationProp } from '@react-navigation/native';
@@ -19,16 +19,16 @@ import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
 import type {
-  AdminPaymentsResult,
   AdminStats,
   Exam,
   ExamAttempt,
   Payment,
   Role,
   User,
+  Question,
 } from '../../api/types';
 
-type Tab = 'overview' | 'users' | 'exams' | 'attempts' | 'payments';
+type Tab = 'overview' | 'users' | 'exams' | 'attempts' | 'payments' | 'past';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -36,6 +36,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'exams', label: 'Exams' },
   { key: 'attempts', label: 'Attempts' },
   { key: 'payments', label: 'Payments' },
+  { key: 'past', label: 'Past Qs 📚' },
 ];
 
 const makeRoleTint = (colors: Colors): Record<string, { fg: string; bg: string }> => ({
@@ -52,7 +53,7 @@ export default function AdminPanelScreen() {
   const dialog = useDialog();
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('overview');
-  const [stats, setStats] = useState<AdminStats | null>(null);
+  const [stats, setStats] = useState<(AdminStats & any) | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
@@ -65,6 +66,15 @@ export default function AdminPanelScreen() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Past Qs admin state
+  const [pastQuestions, setPastQuestions] = useState<Question[]>([]);
+  const [pastStats, setPastStats] = useState<AdminPastStats | null>(null);
+  const [pastSearch, setPastSearch] = useState('');
+  const [pastSubject, setPastSubject] = useState<string>('all');
+  const [pastYear, setPastYear] = useState<string>('all');
+  const [pastSelected, setPastSelected] = useState<Record<string, true>>({});
+  const [pastLoading, setPastLoading] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -88,13 +98,41 @@ export default function AdminPanelScreen() {
     }
   }, [dialog]);
 
+  const loadPast = useCallback(async () => {
+    try {
+      setPastLoading(true);
+      const [list, pst] = await Promise.all([
+        adminApi.pastQuestions({
+          search: pastSearch.trim() || undefined,
+          subject: pastSubject !== 'all' ? pastSubject : undefined,
+          year: pastYear !== 'all' ? pastYear : undefined,
+          limit: '200',
+        }),
+        adminApi.pastStats(),
+      ]);
+      setPastQuestions(list.questions);
+      setPastStats(pst);
+    } catch (err) {
+      void dialog.notify('Error', err instanceof Error ? err.message : 'Could not load past questions.');
+    } finally {
+      setPastLoading(false);
+    }
+  }, [dialog, pastSearch, pastSubject, pastYear]);
+
   useEffect(() => {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (tab === 'past') {
+      void loadPast();
+    }
+  }, [tab, loadPast]);
+
   const onRefresh = async () => {
     setRefreshing(true);
     await load();
+    if (tab === 'past') await loadPast();
     setRefreshing(false);
   };
 
@@ -166,15 +204,111 @@ export default function AdminPanelScreen() {
     }
   };
 
+  // Past admin actions
+  const pastSelectedIds = Object.keys(pastSelected);
+
+  const togglePastSelect = (id: string) => {
+    setPastSelected((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      return next;
+    });
+  };
+
+  const deletePastOne = async (q: Question) => {
+    const ok = await dialog.confirm('Delete past question?', `"${q.questionText.slice(0, 60)}..." will be permanently removed.`, {
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await adminApi.removePastQuestion(q._id);
+      setPastQuestions((prev) => prev.filter((x) => x._id !== q._id));
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Delete failed.');
+    }
+  };
+
+  const restorePastOne = async (q: Question) => {
+    try {
+      await adminApi.restorePastQuestion(q._id);
+      setPastQuestions((prev) => prev.filter((x) => x._id !== q._id));
+      void dialog.notify('Restored', 'Question restored to active bank.');
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Restore failed.');
+    }
+  };
+
+  const bulkDeletePast = async () => {
+    if (pastSelectedIds.length === 0) return;
+    const ok = await dialog.confirm('Delete past questions?', `${pastSelectedIds.length} past question(s) will be permanently removed.`, {
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await adminApi.bulkDeletePast(pastSelectedIds);
+      setPastQuestions((prev) => prev.filter((q) => !pastSelected[q._id]));
+      setPastSelected({});
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Bulk delete failed.');
+    }
+  };
+
+  const bulkRestorePast = async () => {
+    if (pastSelectedIds.length === 0) return;
+    const ok = await dialog.confirm('Restore past questions?', `${pastSelectedIds.length} question(s) will be restored to active bank.`, {
+      confirmLabel: 'Restore',
+    });
+    if (!ok) return;
+    try {
+      await adminApi.bulkRestorePast(pastSelectedIds);
+      setPastQuestions((prev) => prev.filter((q) => !pastSelected[q._id]));
+      setPastSelected({});
+      void dialog.notify('Restored', `${pastSelectedIds.length} questions restored.`);
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Restore failed.');
+    }
+  };
+
   if (loading) return <Loading text="Loading admin data…" />;
 
   const term = search.trim().toLowerCase();
   const visibleUsers = term
-    ? users.filter(
-        (u) =>
-          u.name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term)
-      )
+    ? users.filter((u) => u.name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term))
     : users;
+
+  const subjects = useMemo(() => {
+    const map = new Map<string, number>();
+    if (pastStats?.bySubject) {
+      pastStats.bySubject.forEach((s) => map.set(s._id || 'Unspecified', s.count));
+    } else {
+      for (const q of pastQuestions) {
+        const s = (q.subject || 'Unspecified').trim();
+        map.set(s, (map.get(s) ?? 0) + 1);
+      }
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  }, [pastQuestions, pastStats]);
+
+  const years = useMemo(() => {
+    if (pastStats?.byYear) return pastStats.byYear.map((y) => ({ label: String(y._id), count: y.count }));
+    const set = new Map<number, number>();
+    for (const q of pastQuestions) {
+      if (q.pastQuestionYear) set.set(q.pastQuestionYear, (set.get(q.pastQuestionYear) ?? 0) + 1);
+    }
+    return [...set.entries()].sort((a, b) => b[0] - a[0]).map(([y, c]) => ({ label: String(y), count: c }));
+  }, [pastQuestions, pastStats]);
+
+  const filteredPast = useMemo(() => {
+    if (pastSubject === 'all' && pastYear === 'all') return pastQuestions;
+    return pastQuestions.filter((q) => {
+      const matchSubject = pastSubject === 'all' || (q.subject || 'Unspecified') === pastSubject;
+      const matchYear = pastYear === 'all' || String(q.pastQuestionYear || '') === pastYear;
+      return matchSubject && matchYear;
+    });
+  }, [pastQuestions, pastSubject, pastYear]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
@@ -187,11 +321,7 @@ export default function AdminPanelScreen() {
         {TABS.map((t) => {
           const active = tab === t.key;
           return (
-            <Pressable
-              key={t.key}
-              onPress={() => setTab(t.key)}
-              style={[styles.tab, active && styles.tabActive]}
-            >
+            <Pressable key={t.key} onPress={() => setTab(t.key)} style={[styles.tab, active && styles.tabActive]}>
               <Text style={[styles.tabText, active && styles.tabTextActive]}>{t.label}</Text>
             </Pressable>
           );
@@ -216,36 +346,50 @@ export default function AdminPanelScreen() {
               <StatTile label="Questions" value={stats?.totalQuestions ?? 0} tint={colors.warning} />
             </View>
             <View style={[styles.statRow, { marginTop: spacing.md }]}>
+              <StatTile label="Active Qs" value={(stats as any)?.totalActiveQuestions ?? 0} />
+              <StatTile label="Past Qs" value={(stats as any)?.totalPastQuestions ?? pastStats?.totalPast ?? 0} tint={colors.warning} />
               <StatTile label="Attempts" value={stats?.totalAttempts ?? 0} />
-              <StatTile
-                label="Completed"
-                value={stats?.completedAttempts ?? 0}
-                tint={colors.success}
-              />
+            </View>
+
+            {(stats as any)?.pastByYear?.length > 0 && (
+              <Card style={{ marginTop: spacing.lg }}>
+                <Text style={styles.cardTitle}>📚 Past Questions by Year</Text>
+                {((stats as any).pastByYear as { _id: number; count: number }[]).map((y) => (
+                  <View key={y._id} style={styles.statLine}>
+                    <Text style={styles.statLineLabel}>{y._id}</Text>
+                    <Text style={styles.statLineValue}>{y.count}</Text>
+                  </View>
+                ))}
+              </Card>
+            )}
+
+            {(stats as any)?.pastBySubject?.length > 0 && (
+              <Card>
+                <Text style={styles.cardTitle}>📘 Past by Subject</Text>
+                {((stats as any).pastBySubject as { _id: string; count: number }[]).map((s) => (
+                  <View key={s._id || 'unspec'} style={styles.statLine}>
+                    <Text style={styles.statLineLabel}>{s._id || 'Unspecified'}</Text>
+                    <Text style={styles.statLineValue}>{s.count}</Text>
+                  </View>
+                ))}
+              </Card>
+            )}
+
+            <View style={[styles.statRow, { marginTop: spacing.md }]}>
+              <StatTile label="Completed" value={stats?.completedAttempts ?? 0} tint={colors.success} />
             </View>
 
             <Text style={styles.sectionLabel}>Revenue</Text>
             <View style={styles.statRow}>
               <StatTile
-                label={`Total (${stats?.payments?.currency || 'NGN'})`}
-                value={(stats?.payments?.totalRevenue ?? 0).toLocaleString()}
+                label={`Total (${(stats as any)?.payments?.currency || 'NGN'})`}
+                value={((stats as any)?.payments?.totalRevenue ?? 0).toLocaleString()}
                 tint={colors.success}
               />
-              <StatTile
-                label="Entry fees"
-                value={stats?.payments?.entryCount ?? 0}
-                tint={colors.primary}
-              />
-              <StatTile
-                label="Review fees"
-                value={stats?.payments?.reviewCount ?? 0}
-                tint={colors.warning}
-              />
+              <StatTile label="Entry fees" value={(stats as any)?.payments?.entryCount ?? 0} tint={colors.primary} />
+              <StatTile label="Review fees" value={(stats as any)?.payments?.reviewCount ?? 0} tint={colors.warning} />
             </View>
-            <Text style={styles.sectionNote}>
-              Every paid paper earns twice: entry (take) + review (answers). Totals shown in
-              whole currency units.
-            </Text>
+            <Text style={styles.sectionNote}>Every paid paper earns twice: entry + review.</Text>
           </>
         )}
 
@@ -260,29 +404,15 @@ export default function AdminPanelScreen() {
                 <Card key={id}>
                   <View style={styles.rowTop}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.name}>
-                        {u.name} {isMe ? '(you)' : ''}
-                      </Text>
+                      <Text style={styles.name}>{u.name} {isMe ? '(you)' : ''}</Text>
                       <Text style={styles.sub}>{u.email}</Text>
                     </View>
                     <Badge text={u.role.toUpperCase()} color={tint.fg} bg={tint.bg} />
                   </View>
                   {!isMe && (
                     <View style={styles.actions}>
-                      <Button
-                        title="Change role"
-                        variant="ghost"
-                        size="sm"
-                        style={{ flex: 1 }}
-                        onPress={() => changeRole(u)}
-                      />
-                      <Button
-                        title="Delete"
-                        variant="danger"
-                        size="sm"
-                        style={{ flex: 1 }}
-                        onPress={() => deleteUser(u)}
-                      />
+                      <Button title="Change role" variant="ghost" size="sm" style={{ flex: 1 }} onPress={() => changeRole(u)} />
+                      <Button title="Delete" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => deleteUser(u)} />
                     </View>
                   )}
                 </Card>
@@ -295,57 +425,26 @@ export default function AdminPanelScreen() {
           <>
             <View style={styles.rowTop}>
               <Text style={styles.sectionLabel}>All exams</Text>
-              <Button
-                title="+ New past paper"
-                variant="secondary"
-                size="sm"
-                onPress={() =>
-                  navigation.navigate('ExamBuilder', { source: 'past' })
-                }
-              />
+              <Button title="+ New past paper" variant="secondary" size="sm" onPress={() => navigation.navigate('ExamBuilder', { source: 'past' })} />
             </View>
             {exams.map((e) => {
               const creator = typeof e.creator === 'object' ? e.creator : null;
-              const isPast = e.source === 'past';
-              const entry = e.pricing?.entryFee || 0;
-              const review = e.pricing?.reviewFee || 0;
+              const isPast = (e as any).source === 'past';
+              const entry = (e as any).pricing?.entryFee || 0;
+              const review = (e as any).pricing?.reviewFee || 0;
               return (
                 <Card key={e._id}>
                   <View style={styles.rowTop}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.name}>
-                        {e.title}
-                        {!!e.year && ` (${e.year})`}
-                      </Text>
-                      <Text style={styles.sub}>
-                        by {creator?.name || 'Unknown'} · {e.questions?.length ?? 0} questions
-                        {isPast
-                          ? ` · entry ${entry}, review ${review}`
-                          : review > 0
-                            ? ` · review ${review}`
-                            : ''}
-                      </Text>
+                      <Text style={styles.name}>{e.title}{!!(e as any).year && ` (${(e as any).year})`}</Text>
+                      <Text style={styles.sub}>by {creator?.name || 'Unknown'} · {e.questions?.length ?? 0} questions{isPast ? ` · entry ${entry}, review ${review}` : review > 0 ? ` · review ${review}` : ''}</Text>
                     </View>
                     <View style={{ gap: spacing.xs, alignItems: 'flex-end' }}>
-                      <Badge
-                        text={isPast ? 'PAST' : 'TEACHER'}
-                        color={isPast ? colors.warning : colors.primary}
-                        bg={isPast ? colors.warningLight : colors.primaryLight}
-                      />
-                      <Badge
-                        text={e.settings?.isPublished ? 'LIVE' : 'DRAFT'}
-                        color={e.settings?.isPublished ? colors.success : colors.warning}
-                        bg={e.settings?.isPublished ? colors.successLight : colors.warningLight}
-                      />
+                      <Badge text={isPast ? 'PAST' : 'TEACHER'} color={isPast ? colors.warning : colors.primary} bg={isPast ? colors.warningLight : colors.primaryLight} />
+                      <Badge text={e.settings?.isPublished ? 'LIVE' : 'DRAFT'} color={e.settings?.isPublished ? colors.success : colors.warning} bg={e.settings?.isPublished ? colors.successLight : colors.warningLight} />
                     </View>
                   </View>
-                  <Button
-                    title="Delete exam"
-                    variant="danger"
-                    size="sm"
-                    style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
-                    onPress={() => deleteExam(e)}
-                  />
+                  <Button title="Delete exam" variant="danger" size="sm" style={{ marginTop: spacing.md, alignSelf: 'flex-start' }} onPress={() => deleteExam(e)} />
                 </Card>
               );
             })}
@@ -365,13 +464,7 @@ export default function AdminPanelScreen() {
                   </View>
                   <Text style={styles.score}>{Math.round(a.percentage || 0)}%</Text>
                 </View>
-                <Button
-                  title="Delete attempt"
-                  variant="danger"
-                  size="sm"
-                  style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
-                  onPress={() => deleteAttempt(a)}
-                />
+                <Button title="Delete attempt" variant="danger" size="sm" style={{ marginTop: spacing.md, alignSelf: 'flex-start' }} onPress={() => deleteAttempt(a)} />
               </Card>
             );
           })}
@@ -379,30 +472,11 @@ export default function AdminPanelScreen() {
         {tab === 'payments' && (
           <>
             <View style={styles.statRow}>
-              <StatTile
-                label="Revenue"
-                value={paymentTotals.totalRevenue.toLocaleString()}
-                tint={colors.success}
-              />
-              <StatTile
-                label="Entry pays"
-                value={paymentTotals.entryCount}
-                tint={colors.primary}
-              />
-              <StatTile
-                label="Review pays"
-                value={paymentTotals.reviewCount}
-                tint={colors.warning}
-              />
+              <StatTile label="Revenue" value={paymentTotals.totalRevenue.toLocaleString()} tint={colors.success} />
+              <StatTile label="Entry pays" value={paymentTotals.entryCount} tint={colors.primary} />
+              <StatTile label="Review pays" value={paymentTotals.reviewCount} tint={colors.warning} />
             </View>
-
-            {payments.length === 0 && (
-              <Text style={styles.emptyNote}>
-                No payments yet. They appear here the moment a student pays an entry or review
-                fee.
-              </Text>
-            )}
-
+            {payments.length === 0 && <Text style={styles.emptyNote}>No payments yet.</Text>}
             {payments.map((p) => {
               const student = typeof p.student === 'object' ? p.student : null;
               const exam = typeof p.exam === 'object' ? p.exam : null;
@@ -412,24 +486,166 @@ export default function AdminPanelScreen() {
                 <Card key={p._id}>
                   <View style={styles.rowTop}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.name}>
-                        {student?.name || 'Student'} · {p.amount} {p.currency}
-                      </Text>
-                      <Text style={styles.sub}>
-                        {exam?.title || 'Exam'} · {isEntry ? 'Entry fee' : 'Review fee'} ·{' '}
-                        {new Date(p.createdAt || '').toLocaleDateString()}
-                      </Text>
+                      <Text style={styles.name}>{student?.name || 'Student'} · {p.amount} {p.currency}</Text>
+                      <Text style={styles.sub}>{exam?.title || 'Exam'} · {isEntry ? 'Entry fee' : 'Review fee'} · {new Date(p.createdAt || '').toLocaleDateString()}</Text>
                       <Text style={styles.sub}>Ref {p.reference}</Text>
                     </View>
-                    <Badge
-                      text={paid ? 'PAID' : p.status.toUpperCase()}
-                      color={paid ? colors.success : p.status === 'pending' ? colors.warning : colors.danger}
-                      bg={paid ? colors.successLight : p.status === 'pending' ? colors.warningLight : colors.dangerLight}
-                    />
+                    <Badge text={paid ? 'PAID' : p.status.toUpperCase()} color={paid ? colors.success : p.status === 'pending' ? colors.warning : colors.danger} bg={paid ? colors.successLight : p.status === 'pending' ? colors.warningLight : colors.dangerLight} />
                   </View>
                 </Card>
               );
             })}
+          </>
+        )}
+
+        {tab === 'past' && (
+          <>
+            {pastLoading && <Loading text="Loading past questions…" />}
+            {pastStats && (
+              <>
+                <View style={styles.statRow}>
+                  <StatTile label="Total Past" value={pastStats.totalPast} tint={colors.warning} />
+                  <StatTile label="Subjects" value={pastStats.bySubject.length} />
+                  <StatTile label="Years" value={pastStats.byYear.length} tint={colors.accent} />
+                </View>
+                <View style={[styles.statRow, { marginTop: spacing.md }]}>
+                  <StatTile label="Sessions" value={pastStats.bySession.length} />
+                  <StatTile label="Exam Types" value={pastStats.byExamType.length} tint={colors.primary} />
+                  <StatTile label="Difficulties" value={pastStats.byDifficulty.length} />
+                </View>
+
+                <Card style={{ marginTop: spacing.lg }}>
+                  <Text style={styles.cardTitle}>By Year</Text>
+                  {pastStats.byYear.slice(0, 8).map((y) => (
+                    <View key={y._id} style={styles.statLine}>
+                      <Text style={styles.statLineLabel}>{y._id}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+                        <View style={[styles.bar, { width: Math.min(80, y.count * 4), backgroundColor: colors.warning }]} />
+                        <Text style={styles.statLineValue}>{y.count}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </Card>
+
+                <Card>
+                  <Text style={styles.cardTitle}>By Subject</Text>
+                  {pastStats.bySubject.slice(0, 8).map((s) => (
+                    <View key={s._id || 'unspec'} style={styles.statLine}>
+                      <Text style={styles.statLineLabel}>{s._id || 'Unspecified'}</Text>
+                      <Text style={styles.statLineValue}>{s.count}</Text>
+                    </View>
+                  ))}
+                </Card>
+
+                <Card>
+                  <Text style={styles.cardTitle}>Top Teachers</Text>
+                  {pastStats.byTeacher.slice(0, 5).map((t) => (
+                    <View key={t._id} style={styles.statLine}>
+                      <View>
+                        <Text style={styles.statLineLabel}>{t.name || 'Unknown'}</Text>
+                        <Text style={styles.subSmall}>{t.email || ''}</Text>
+                      </View>
+                      <Text style={styles.statLineValue}>{t.count}</Text>
+                    </View>
+                  ))}
+                </Card>
+
+                {pastStats.bySession.length > 0 && (
+                  <Card>
+                    <Text style={styles.cardTitle}>By Session</Text>
+                    {pastStats.bySession.map((s) => (
+                      <View key={s._id} style={styles.statLine}>
+                        <Text style={styles.statLineLabel}>{s._id}</Text>
+                        <Text style={styles.statLineValue}>{s.count}</Text>
+                      </View>
+                    ))}
+                  </Card>
+                )}
+
+                {pastStats.recent?.length > 0 && (
+                  <Card>
+                    <Text style={styles.cardTitle}>Recently Archived</Text>
+                    {pastStats.recent.map((r) => (
+                      <View key={r._id} style={styles.recentRow}>
+                        <Text style={styles.recentText} numberOfLines={1}>{r.questionText}</Text>
+                        <Text style={styles.subSmall}>{r.subject || ''} {r.pastQuestionYear ? `· ${r.pastQuestionYear}` : ''} · {r.creator?.name || ''} · {r.movedToPastAt ? new Date(r.movedToPastAt).toLocaleDateString() : ''}</Text>
+                      </View>
+                    ))}
+                  </Card>
+                )}
+              </>
+            )}
+
+            <View style={styles.pastControls}>
+              <Field value={pastSearch} onChangeText={setPastSearch} placeholder="Search past questions…" />
+              <View style={styles.filterRow}>
+                <Pressable onPress={() => setPastSubject('all')} style={[styles.chip, pastSubject === 'all' && styles.chipActive]}>
+                  <Text style={[styles.chipText, pastSubject === 'all' && styles.chipTextActive]}>All Subjects</Text>
+                </Pressable>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm, flexDirection: 'row' }}>
+                  {subjects.slice(0, 10).map(([name, count]) => (
+                    <Pressable key={name} onPress={() => setPastSubject(name)} style={[styles.chip, pastSubject === name && styles.chipActive]}>
+                      <Text style={[styles.chipText, pastSubject === name && styles.chipTextActive]}>{name} ({count})</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+
+              <View style={styles.filterRow}>
+                <Pressable onPress={() => setPastYear('all')} style={[styles.chip, pastYear === 'all' && styles.chipActive]}>
+                  <Text style={[styles.chipText, pastYear === 'all' && styles.chipTextActive]}>All Years</Text>
+                </Pressable>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm, flexDirection: 'row' }}>
+                  {years.map((y) => (
+                    <Pressable key={y.label} onPress={() => setPastYear(y.label)} style={[styles.chip, pastYear === y.label && styles.chipActive]}>
+                      <Text style={[styles.chipText, pastYear === y.label && styles.chipTextActive]}>{y.label} ({y.count})</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+
+              {pastSelectedIds.length > 0 && (
+                <View style={styles.bulkBar}>
+                  <Text style={styles.bulkText}>{pastSelectedIds.length} selected</Text>
+                  <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+                    <Button title={`Restore ${pastSelectedIds.length}`} size="sm" onPress={bulkRestorePast} />
+                    <Button title={`Delete ${pastSelectedIds.length}`} variant="danger" size="sm" onPress={bulkDeletePast} />
+                    <Button title="Clear" variant="ghost" size="sm" onPress={() => setPastSelected({})} />
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.showing}>Showing {filteredPast.length} of {pastQuestions.length} past questions</Text>
+            </View>
+
+            {filteredPast.map((q) => {
+              const creator = typeof q.creator === 'object' ? (q.creator as any) : null;
+              const selected = !!pastSelected[q._id];
+              return (
+                <Card key={q._id} style={selected ? { borderColor: colors.primary, backgroundColor: colors.primaryLight } : undefined}>
+                  <Pressable onPress={() => togglePastSelect(q._id)} style={styles.rowTop}>
+                    <View style={[styles.check, selected && styles.checkOn]}>
+                      {selected && <Text style={styles.checkMark}>✓</Text>}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.name} numberOfLines={2}>{q.questionText}</Text>
+                      <Text style={styles.sub}>{q.subject || 'No subject'} · {q.difficulty} · {q.points}pt · Year: {q.pastQuestionYear || '—'} {q.pastQuestionSession ? `· ${q.pastQuestionSession}` : ''} {q.pastQuestionExamType ? `· ${q.pastQuestionExamType}` : ''}</Text>
+                      <Text style={styles.subSmall}>by {creator?.name || 'Unknown'} · archived {q.movedToPastAt ? new Date(q.movedToPastAt).toLocaleDateString() : ''}</Text>
+                    </View>
+                  </Pressable>
+                  <View style={styles.actions}>
+                    <Button title="Restore" variant="secondary" size="sm" style={{ flex: 1 }} onPress={() => restorePastOne(q)} />
+                    <Button title="Delete" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => deletePastOne(q)} />
+                  </View>
+                </Card>
+              );
+            })}
+
+            {filteredPast.length === 0 && !pastLoading && (
+              <Card>
+                <Text style={styles.emptyText}>No past questions match filters.</Text>
+              </Card>
+            )}
           </>
         )}
       </ScrollView>
@@ -441,18 +657,8 @@ const makeStyles = (colors: Colors) =>
   StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   tabStrip: { maxHeight: 56, backgroundColor: colors.card },
-  tabStripInner: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    gap: spacing.sm,
-    alignItems: 'center',
-  },
-  tab: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 8,
-    borderRadius: radius.pill,
-    backgroundColor: colors.bg,
-  },
+  tabStripInner: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: spacing.sm, alignItems: 'center' },
+  tab: { paddingHorizontal: spacing.lg, paddingVertical: 8, borderRadius: radius.pill, backgroundColor: colors.bg },
   tabActive: { backgroundColor: colors.primary },
   tabText: { fontSize: 14, fontWeight: '600', color: colors.textMuted },
   tabTextActive: { color: colors.white },
@@ -461,21 +667,30 @@ const makeStyles = (colors: Colors) =>
   rowTop: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   name: { fontSize: 15, fontWeight: '700', color: colors.text },
   sub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+  subSmall: { fontSize: 11, color: colors.textLight, marginTop: 2 },
   score: { fontSize: 16, fontWeight: '800', color: colors.primary },
   actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
-  sectionLabel: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: colors.text,
-    marginBottom: spacing.md,
-    marginTop: spacing.sm,
-  },
+  cardTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
+  statLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border, gap: spacing.md },
+  statLineLabel: { fontSize: 14, color: colors.text, fontWeight: '600', flex: 1 },
+  statLineValue: { fontSize: 14, fontWeight: '800', color: colors.primary },
+  bar: { height: 6, borderRadius: 3 },
+  recentRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
+  recentText: { fontSize: 13, color: colors.text, fontWeight: '600' },
+  pastControls: { marginTop: spacing.lg },
+  filterRow: { marginTop: spacing.md, gap: spacing.sm },
+  chip: { paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, alignSelf: 'flex-start' },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipText: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
+  chipTextActive: { color: colors.white },
+  bulkBar: { marginTop: spacing.md, padding: spacing.md, backgroundColor: colors.card, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: spacing.md },
+  bulkText: { fontSize: 13, fontWeight: '700', color: colors.text },
+  showing: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm, marginBottom: spacing.sm },
+  check: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  checkOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  checkMark: { color: colors.white, fontSize: 13, fontWeight: '900' },
+  emptyText: { fontSize: 14, color: colors.textMuted, textAlign: 'center' },
+  sectionLabel: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md, marginTop: spacing.sm },
   sectionNote: { fontSize: 12, color: colors.textLight, marginTop: spacing.sm },
-  emptyNote: {
-    fontSize: 14,
-    color: colors.textMuted,
-    textAlign: 'center',
-    marginTop: spacing.xl,
-    lineHeight: 21,
-  },
+  emptyNote: { fontSize: 14, color: colors.textMuted, textAlign: 'center', marginTop: spacing.xl, lineHeight: 21 },
 });
