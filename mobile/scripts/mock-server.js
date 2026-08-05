@@ -132,6 +132,11 @@ const server = http.createServer((req, res) => {
       'GET /api/questions/past-questions',
       'GET /api/questions/past-questions/stats',
       'GET /api/admin/stats',
+      'GET /api/admin/past-questions',
+      'GET /api/admin/past-questions/stats',
+      'GET /api/admin/users',
+      'GET /api/admin/exams',
+      'GET /api/admin/attempts',
     ];
     if (needsAuth.includes(key) && !authed) {
       return send(res, 401, { message: 'No token, access denied' });
@@ -309,9 +314,43 @@ const server = http.createServer((req, res) => {
           totalAdmins: 1,
           totalExams: 1,
           totalQuestions: 1,
+          totalActiveQuestions: 1,
+          totalPastQuestions: 1,
           totalAttempts: 1,
           completedAttempts: 1,
+          pastByYear: [{ _id: 2022, count: 1 }],
+          pastBySubject: [{ _id: 'Geography', count: 1 }],
         });
+
+      case 'GET /api/admin/past-questions':
+        return send(res, 200, { questions: [pastQuestion], total: 1, pages: 1 });
+
+      case 'GET /api/admin/past-questions/stats':
+        return send(res, 200, {
+          totalPast: 1,
+          byYear: [{ _id: 2022, count: 1 }],
+          bySubject: [{ _id: 'Geography', count: 1 }],
+          byTeacher: [{ _id: 'u_teacher', count: 1, name: 'Ada Teacher', email: 'teacher@example.com' }],
+          bySession: [{ _id: 'June', count: 1 }],
+          byExamType: [{ _id: 'Final', count: 1 }],
+          byDifficulty: [{ _id: 'medium', count: 1 }],
+          recent: [{ _id: 'pq1', questionText: pastQuestion.questionText, subject: 'Geography', pastQuestionYear: 2022, movedToPastAt: new Date().toISOString(), creator: { name: 'Ada Teacher' } }],
+        });
+
+      case 'DELETE /api/admin/past-questions/pq1':
+        return send(res, 200, { message: 'Past question deleted' });
+
+      case 'POST /api/admin/past-questions/bulk-delete':
+        return send(res, 200, { message: `Deleted ${Array.isArray(body.questionIds) ? body.questionIds.length : 0}`, deletedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0 });
+
+      case 'PATCH /api/admin/past-questions/pq1/restore':
+        return send(res, 200, { message: 'Restored to active bank', question: { ...pastQuestion, isPastQuestion: false } });
+
+      case 'POST /api/admin/past-questions/bulk-restore':
+        return send(res, 200, { message: `Restored ${Array.isArray(body.questionIds) ? body.questionIds.length : 0}`, modifiedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0 });
+
+      case 'PATCH /api/admin/past-questions/pq1':
+        return send(res, 200, { message: 'Past question updated', question: pastQuestion });
 
       case 'GET /api/admin/users':
         return send(res, 200, { users: [teacher, student], total: 2, pages: 1 });

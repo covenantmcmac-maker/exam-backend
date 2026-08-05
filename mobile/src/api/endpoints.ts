@@ -213,8 +213,19 @@ export const attemptsApi = {
 
 /* ----------------------------------------------------------------- admin */
 
+export interface AdminPastStats {
+  totalPast: number;
+  byYear: { _id: number; count: number }[];
+  bySubject: { _id: string; count: number }[];
+  byTeacher: { _id: string; count: number; name?: string; email?: string }[];
+  bySession: { _id: string; count: number }[];
+  byExamType: { _id: string; count: number }[];
+  byDifficulty: { _id: string; count: number }[];
+  recent: { _id: string; questionText: string; subject?: string; pastQuestionYear?: number; movedToPastAt?: string; creator?: { name?: string } }[];
+}
+
 export const adminApi = {
-  stats: () => request<AdminStats>('/api/admin/stats'),
+  stats: () => request<AdminStats & { totalActiveQuestions?: number; totalPastQuestions?: number; pastByYear?: { _id: number; count: number }[]; pastBySubject?: { _id: string; count: number }[] }>('/api/admin/stats'),
 
   users: (params: { role?: string; search?: string } = {}) => {
     const qs = new URLSearchParams();
@@ -245,4 +256,31 @@ export const adminApi = {
 
   removeAttempt: (id: string) =>
     request<{ message: string }>(`/api/admin/attempts/${id}`, { method: 'DELETE' }),
+
+  // Past Questions admin
+  pastQuestions: (params: { subject?: string; year?: string; session?: string; examType?: string; teacher?: string; search?: string; page?: string; limit?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, String(v));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; total: number; pages: number }>(`/api/admin/past-questions${suffix}`);
+  },
+
+  pastStats: () => request<AdminPastStats>('/api/admin/past-questions/stats'),
+
+  updatePastQuestion: (id: string, payload: { pastQuestionYear?: number | null; pastQuestionSession?: string; pastQuestionExamType?: string; subject?: string; category?: string }) =>
+    request<{ message: string; question: Question }>(`/api/admin/past-questions/${id}`, { method: 'PATCH', body: payload }),
+
+  restorePastQuestion: (id: string) =>
+    request<{ message: string; question: Question }>(`/api/admin/past-questions/${id}/restore`, { method: 'PATCH' }),
+
+  bulkRestorePast: (questionIds: string[]) =>
+    request<{ message: string; modifiedCount: number }>(`/api/admin/past-questions/bulk-restore`, { method: 'POST', body: { questionIds } }),
+
+  removePastQuestion: (id: string) =>
+    request<{ message: string }>(`/api/admin/past-questions/${id}`, { method: 'DELETE' }),
+
+  bulkDeletePast: (questionIds: string[]) =>
+    request<{ message: string; deletedCount: number }>(`/api/admin/past-questions/bulk-delete`, { method: 'POST', body: { questionIds } }),
 };
