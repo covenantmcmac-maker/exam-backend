@@ -20,6 +20,11 @@ type Props = CompositeScreenProps<
   NativeStackScreenProps<RootStackParamList>
 >;
 
+function scoreIsVisible(attempt: ExamAttempt) {
+  const exam = typeof attempt.exam === 'object' ? attempt.exam : null;
+  return exam?.settings?.showResults !== false && attempt.percentage !== undefined && attempt.score !== undefined;
+}
+
 export default function StudentHomeScreen({ navigation }: Props) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -76,12 +81,14 @@ export default function StudentHomeScreen({ navigation }: Props) {
   };
 
   const completed = attempts.length;
+  const visibleAttempts = attempts.filter(scoreIsVisible);
+  const visibleCount = visibleAttempts.length;
   const avg =
-    completed > 0
-      ? Math.round(attempts.reduce((sum, a) => sum + (a.percentage || 0), 0) / completed)
+    visibleCount > 0
+      ? Math.round(visibleAttempts.reduce((sum, a) => sum + (a.percentage || 0), 0) / visibleCount)
       : 0;
   const best =
-    completed > 0 ? Math.round(Math.max(...attempts.map((a) => a.percentage || 0))) : 0;
+    visibleCount > 0 ? Math.round(Math.max(...visibleAttempts.map((a) => a.percentage || 0))) : 0;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -127,8 +134,16 @@ export default function StudentHomeScreen({ navigation }: Props) {
         <Text style={styles.sectionTitle}>Your progress</Text>
         <View style={styles.statRow}>
           <StatTile label="Exams taken" value={completed} />
-          <StatTile label="Average" value={`${avg}%`} tint={colors.accent} />
-          <StatTile label="Best score" value={`${best}%`} tint={colors.success} />
+          <StatTile
+            label="Average"
+            value={completed === 0 ? '—' : visibleCount > 0 ? `${avg}%` : 'Hidden'}
+            tint={colors.accent}
+          />
+          <StatTile
+            label="Best score"
+            value={completed === 0 ? '—' : visibleCount > 0 ? `${best}%` : 'Hidden'}
+            tint={colors.success}
+          />
         </View>
 
         {completed > 0 && (
@@ -145,6 +160,7 @@ export default function StudentHomeScreen({ navigation }: Props) {
 
             {attempts.slice(0, 3).map((a) => {
               const exam = typeof a.exam === 'object' ? a.exam : null;
+              const visible = scoreIsVisible(a);
               const pct = Math.round(a.percentage || 0);
               const passed = pct >= (exam?.settings?.passingMarks ?? 50);
               return (
@@ -154,22 +170,34 @@ export default function StudentHomeScreen({ navigation }: Props) {
                       {exam?.title || 'Exam'}
                     </Text>
                     <Text style={styles.resultMeta}>
-                      {a.score}/{a.totalPoints} points
+                      {visible ? `${a.score ?? 0}/${a.totalPoints ?? 0} points` : 'Score hidden by teacher'}
                     </Text>
                   </View>
                   <View
                     style={[
                       styles.pctPill,
-                      { backgroundColor: passed ? colors.successLight : colors.dangerLight },
+                      {
+                        backgroundColor: visible
+                          ? passed
+                            ? colors.successLight
+                            : colors.dangerLight
+                          : colors.primaryLight,
+                      },
                     ]}
                   >
                     <Text
                       style={[
                         styles.pctText,
-                        { color: passed ? colors.success : colors.danger },
+                        {
+                          color: visible
+                            ? passed
+                              ? colors.success
+                              : colors.danger
+                            : colors.primary,
+                        },
                       ]}
                     >
-                      {pct}%
+                      {visible ? `${pct}%` : 'Hidden'}
                     </Text>
                   </View>
                 </Card>

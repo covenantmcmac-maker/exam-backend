@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Exam = require('../models/Exam');
 const ExamAttempt = require('../models/ExamAttempt');
 const Question = require('../models/Question');
+const Payment = require('../models/Payment');
 const { auth, authorize } = require('../middleware/auth');
 
 // ========================
@@ -36,6 +37,16 @@ router.get('/stats', auth, authorize('admin'), async (req, res) => {
       { $limit: 10 }
     ]);
 
+    // Revenue: every paid entry + review fee. Amounts are whole currency units.
+    const paidPayments = await Payment.find({ status: 'paid' });
+    const totalRevenue = paidPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    const entryRevenue = paidPayments
+      .filter(p => p.purpose === 'entry')
+      .reduce((sum, p) => sum + (p.amount || 0), 0);
+    const reviewRevenue = paidPayments
+      .filter(p => p.purpose === 'review')
+      .reduce((sum, p) => sum + (p.amount || 0), 0);
+
     res.json({
       totalUsers,
       totalTeachers,
@@ -48,7 +59,16 @@ router.get('/stats', auth, authorize('admin'), async (req, res) => {
       totalAttempts,
       completedAttempts,
       pastByYear,
-      pastBySubject
+      pastBySubject,
+      payments: {
+        total: paidPayments.length,
+        entryCount: paidPayments.filter(p => p.purpose === 'entry').length,
+        reviewCount: paidPayments.filter(p => p.purpose === 'review').length,
+        totalRevenue,
+        entryRevenue,
+        reviewRevenue,
+        currency: paidPayments[0]?.currency || 'NGN'
+      }
     });
   } catch (error) {
     console.error('Admin stats error:', error);
@@ -154,12 +174,53 @@ router.delete('/users/:id', auth, authorize('admin'), async (req, res) => {
 // ========================
 router.get('/exams', auth, authorize('admin'), async (req, res) => {
   try {
-    const exams = await Exam.find()
+    const filter = {};
+    if (req.query.source && ['teacher', 'past'].includes(req.query.source)) {
+      filter.source = req.query.source;
+    }
+    const exams = await Exam.find(filter)
       .populate('creator', 'name email')
       .sort({ createdAt: -1 });
     res.json(exams);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching exams' });
+  }
+});
+
+// ========================
+// GET ALL PAYMENTS (Admin view)
+// ========================
+router.get('/payments', auth, authorize('admin'), async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.status && ['pending', 'paid', 'failed', 'expired'].includes(req.query.status)) {
+      filter.status = req.query.status;
+    }
+    if (req.query.purpose && ['entry', 'review'].includes(req.query.purpose)) {
+      filter.purpose = req.query.purpose;
+    }
+
+    const payments = await Payment.find(filter)
+      .populate('student', 'name email')
+      .populate('exam', 'title subject year source')
+      .sort({ createdAt: -1 })
+      .limit(200);
+
+    const totals = await Payment.aggregate([
+      { $match: { status: 'paid' } },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$amount' },
+          entryCount: { $sum: { $cond: [{ $eq: ['$purpose', 'entry'] }, 1, 0] } },
+          reviewCount: { $sum: { $cond: [{ $eq: ['$purpose', 'review'] }, 1, 0] } }
+        }
+      }
+    ]);
+
+    res.json({ payments, totals: totals[0] || { totalRevenue: 0, entryCount: 0, reviewCount: 0 } });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching payments' });
   }
 });
 

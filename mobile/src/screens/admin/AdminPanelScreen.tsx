@@ -8,22 +8,34 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Badge, Button, Card, Field, Loading, StatTile } from '../../components/ui';
 import { adminApi, AdminPastStats } from '../../api/endpoints';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
+import type { NavigationProp } from '@react-navigation/native';
+import type { RootStackParamList } from '../../navigation/types';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
-import type { AdminStats, Exam, ExamAttempt, Role, User, Question } from '../../api/types';
+import type {
+  AdminStats,
+  Exam,
+  ExamAttempt,
+  Payment,
+  Role,
+  User,
+  Question,
+} from '../../api/types';
 
-type Tab = 'overview' | 'users' | 'exams' | 'attempts' | 'past';
+type Tab = 'overview' | 'users' | 'exams' | 'attempts' | 'payments' | 'past';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'users', label: 'Users' },
   { key: 'exams', label: 'Exams' },
   { key: 'attempts', label: 'Attempts' },
+  { key: 'payments', label: 'Payments' },
   { key: 'past', label: 'Past Qs 📚' },
 ];
 
@@ -39,11 +51,18 @@ export default function AdminPanelScreen() {
   const roleTint = useMemo(() => makeRoleTint(colors), [colors]);
   const { user: me } = useAuth();
   const dialog = useDialog();
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('overview');
   const [stats, setStats] = useState<(AdminStats & any) | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [paymentTotals, setPaymentTotals] = useState({
+    totalRevenue: 0,
+    entryCount: 0,
+    reviewCount: 0,
+  });
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -59,16 +78,19 @@ export default function AdminPanelScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [s, u, e, a] = await Promise.all([
+      const [s, u, e, a, p] = await Promise.all([
         adminApi.stats(),
         adminApi.users(),
         adminApi.exams(),
         adminApi.attempts(),
+        adminApi.payments(),
       ]);
       setStats(s);
       setUsers(u.users);
       setExams(e);
       setAttempts(a);
+      setPayments(p.payments);
+      setPaymentTotals(p.totals);
     } catch (err) {
       void dialog.notify('Error', err instanceof Error ? err.message : 'Could not load admin data.');
     } finally {
@@ -80,7 +102,12 @@ export default function AdminPanelScreen() {
     try {
       setPastLoading(true);
       const [list, pst] = await Promise.all([
-        adminApi.pastQuestions({ search: pastSearch.trim() || undefined, subject: pastSubject !== 'all' ? pastSubject : undefined, year: pastYear !== 'all' ? pastYear : undefined, limit: '200' }),
+        adminApi.pastQuestions({
+          search: pastSearch.trim() || undefined,
+          subject: pastSubject !== 'all' ? pastSubject : undefined,
+          year: pastYear !== 'all' ? pastYear : undefined,
+          limit: '200',
+        }),
         adminApi.pastStats(),
       ]);
       setPastQuestions(list.questions);
@@ -190,7 +217,10 @@ export default function AdminPanelScreen() {
   };
 
   const deletePastOne = async (q: Question) => {
-    const ok = await dialog.confirm('Delete past question?', `"${q.questionText.slice(0, 60)}..." will be permanently removed.`, { confirmLabel: 'Delete', destructive: true });
+    const ok = await dialog.confirm('Delete past question?', `"${q.questionText.slice(0, 60)}..." will be permanently removed.`, {
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
     if (!ok) return;
     try {
       await adminApi.removePastQuestion(q._id);
@@ -212,7 +242,10 @@ export default function AdminPanelScreen() {
 
   const bulkDeletePast = async () => {
     if (pastSelectedIds.length === 0) return;
-    const ok = await dialog.confirm('Delete past questions?', `${pastSelectedIds.length} past question(s) will be permanently removed.`, { confirmLabel: 'Delete', destructive: true });
+    const ok = await dialog.confirm('Delete past questions?', `${pastSelectedIds.length} past question(s) will be permanently removed.`, {
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
     if (!ok) return;
     try {
       await adminApi.bulkDeletePast(pastSelectedIds);
@@ -225,7 +258,9 @@ export default function AdminPanelScreen() {
 
   const bulkRestorePast = async () => {
     if (pastSelectedIds.length === 0) return;
-    const ok = await dialog.confirm('Restore past questions?', `${pastSelectedIds.length} question(s) will be restored to active bank.`, { confirmLabel: 'Restore' });
+    const ok = await dialog.confirm('Restore past questions?', `${pastSelectedIds.length} question(s) will be restored to active bank.`, {
+      confirmLabel: 'Restore',
+    });
     if (!ok) return;
     try {
       await adminApi.bulkRestorePast(pastSelectedIds);
@@ -241,13 +276,9 @@ export default function AdminPanelScreen() {
 
   const term = search.trim().toLowerCase();
   const visibleUsers = term
-    ? users.filter(
-        (u) =>
-          u.name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term)
-      )
+    ? users.filter((u) => u.name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term))
     : users;
 
-  // Past filters derived
   const subjects = useMemo(() => {
     const map = new Map<string, number>();
     if (pastStats?.bySubject) {
@@ -290,11 +321,7 @@ export default function AdminPanelScreen() {
         {TABS.map((t) => {
           const active = tab === t.key;
           return (
-            <Pressable
-              key={t.key}
-              onPress={() => setTab(t.key)}
-              style={[styles.tab, active && styles.tabActive]}
-            >
+            <Pressable key={t.key} onPress={() => setTab(t.key)} style={[styles.tab, active && styles.tabActive]}>
               <Text style={[styles.tabText, active && styles.tabTextActive]}>{t.label}</Text>
             </Pressable>
           );
@@ -351,6 +378,18 @@ export default function AdminPanelScreen() {
             <View style={[styles.statRow, { marginTop: spacing.md }]}>
               <StatTile label="Completed" value={stats?.completedAttempts ?? 0} tint={colors.success} />
             </View>
+
+            <Text style={styles.sectionLabel}>Revenue</Text>
+            <View style={styles.statRow}>
+              <StatTile
+                label={`Total (${(stats as any)?.payments?.currency || 'NGN'})`}
+                value={((stats as any)?.payments?.totalRevenue ?? 0).toLocaleString()}
+                tint={colors.success}
+              />
+              <StatTile label="Entry fees" value={(stats as any)?.payments?.entryCount ?? 0} tint={colors.primary} />
+              <StatTile label="Review fees" value={(stats as any)?.payments?.reviewCount ?? 0} tint={colors.warning} />
+            </View>
+            <Text style={styles.sectionNote}>Every paid paper earns twice: entry + review.</Text>
           </>
         )}
 
@@ -365,29 +404,15 @@ export default function AdminPanelScreen() {
                 <Card key={id}>
                   <View style={styles.rowTop}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.name}>
-                        {u.name} {isMe ? '(you)' : ''}
-                      </Text>
+                      <Text style={styles.name}>{u.name} {isMe ? '(you)' : ''}</Text>
                       <Text style={styles.sub}>{u.email}</Text>
                     </View>
                     <Badge text={u.role.toUpperCase()} color={tint.fg} bg={tint.bg} />
                   </View>
                   {!isMe && (
                     <View style={styles.actions}>
-                      <Button
-                        title="Change role"
-                        variant="ghost"
-                        size="sm"
-                        style={{ flex: 1 }}
-                        onPress={() => changeRole(u)}
-                      />
-                      <Button
-                        title="Delete"
-                        variant="danger"
-                        size="sm"
-                        style={{ flex: 1 }}
-                        onPress={() => deleteUser(u)}
-                      />
+                      <Button title="Change role" variant="ghost" size="sm" style={{ flex: 1 }} onPress={() => changeRole(u)} />
+                      <Button title="Delete" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => deleteUser(u)} />
                     </View>
                   )}
                 </Card>
@@ -396,34 +421,35 @@ export default function AdminPanelScreen() {
           </>
         )}
 
-        {tab === 'exams' &&
-          exams.map((e) => {
-            const creator = typeof e.creator === 'object' ? e.creator : null;
-            return (
-              <Card key={e._id}>
-                <View style={styles.rowTop}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.name}>{e.title}</Text>
-                    <Text style={styles.sub}>
-                      by {creator?.name || 'Unknown'} · {e.questions?.length ?? 0} questions
-                    </Text>
+        {tab === 'exams' && (
+          <>
+            <View style={styles.rowTop}>
+              <Text style={styles.sectionLabel}>All exams</Text>
+              <Button title="+ New past paper" variant="secondary" size="sm" onPress={() => navigation.navigate('ExamBuilder', { source: 'past' })} />
+            </View>
+            {exams.map((e) => {
+              const creator = typeof e.creator === 'object' ? e.creator : null;
+              const isPast = (e as any).source === 'past';
+              const entry = (e as any).pricing?.entryFee || 0;
+              const review = (e as any).pricing?.reviewFee || 0;
+              return (
+                <Card key={e._id}>
+                  <View style={styles.rowTop}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.name}>{e.title}{!!(e as any).year && ` (${(e as any).year})`}</Text>
+                      <Text style={styles.sub}>by {creator?.name || 'Unknown'} · {e.questions?.length ?? 0} questions{isPast ? ` · entry ${entry}, review ${review}` : review > 0 ? ` · review ${review}` : ''}</Text>
+                    </View>
+                    <View style={{ gap: spacing.xs, alignItems: 'flex-end' }}>
+                      <Badge text={isPast ? 'PAST' : 'TEACHER'} color={isPast ? colors.warning : colors.primary} bg={isPast ? colors.warningLight : colors.primaryLight} />
+                      <Badge text={e.settings?.isPublished ? 'LIVE' : 'DRAFT'} color={e.settings?.isPublished ? colors.success : colors.warning} bg={e.settings?.isPublished ? colors.successLight : colors.warningLight} />
+                    </View>
                   </View>
-                  <Badge
-                    text={e.settings?.isPublished ? 'LIVE' : 'DRAFT'}
-                    color={e.settings?.isPublished ? colors.success : colors.warning}
-                    bg={e.settings?.isPublished ? colors.successLight : colors.warningLight}
-                  />
-                </View>
-                <Button
-                  title="Delete exam"
-                  variant="danger"
-                  size="sm"
-                  style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
-                  onPress={() => deleteExam(e)}
-                />
-              </Card>
-            );
-          })}
+                  <Button title="Delete exam" variant="danger" size="sm" style={{ marginTop: spacing.md, alignSelf: 'flex-start' }} onPress={() => deleteExam(e)} />
+                </Card>
+              );
+            })}
+          </>
+        )}
 
         {tab === 'attempts' &&
           attempts.map((a) => {
@@ -438,21 +464,43 @@ export default function AdminPanelScreen() {
                   </View>
                   <Text style={styles.score}>{Math.round(a.percentage || 0)}%</Text>
                 </View>
-                <Button
-                  title="Delete attempt"
-                  variant="danger"
-                  size="sm"
-                  style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
-                  onPress={() => deleteAttempt(a)}
-                />
+                <Button title="Delete attempt" variant="danger" size="sm" style={{ marginTop: spacing.md, alignSelf: 'flex-start' }} onPress={() => deleteAttempt(a)} />
               </Card>
             );
           })}
 
+        {tab === 'payments' && (
+          <>
+            <View style={styles.statRow}>
+              <StatTile label="Revenue" value={paymentTotals.totalRevenue.toLocaleString()} tint={colors.success} />
+              <StatTile label="Entry pays" value={paymentTotals.entryCount} tint={colors.primary} />
+              <StatTile label="Review pays" value={paymentTotals.reviewCount} tint={colors.warning} />
+            </View>
+            {payments.length === 0 && <Text style={styles.emptyNote}>No payments yet.</Text>}
+            {payments.map((p) => {
+              const student = typeof p.student === 'object' ? p.student : null;
+              const exam = typeof p.exam === 'object' ? p.exam : null;
+              const isEntry = p.purpose === 'entry';
+              const paid = p.status === 'paid';
+              return (
+                <Card key={p._id}>
+                  <View style={styles.rowTop}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.name}>{student?.name || 'Student'} · {p.amount} {p.currency}</Text>
+                      <Text style={styles.sub}>{exam?.title || 'Exam'} · {isEntry ? 'Entry fee' : 'Review fee'} · {new Date(p.createdAt || '').toLocaleDateString()}</Text>
+                      <Text style={styles.sub}>Ref {p.reference}</Text>
+                    </View>
+                    <Badge text={paid ? 'PAID' : p.status.toUpperCase()} color={paid ? colors.success : p.status === 'pending' ? colors.warning : colors.danger} bg={paid ? colors.successLight : p.status === 'pending' ? colors.warningLight : colors.dangerLight} />
+                  </View>
+                </Card>
+              );
+            })}
+          </>
+        )}
+
         {tab === 'past' && (
           <>
             {pastLoading && <Loading text="Loading past questions…" />}
-
             {pastStats && (
               <>
                 <View style={styles.statRow}>
@@ -460,7 +508,6 @@ export default function AdminPanelScreen() {
                   <StatTile label="Subjects" value={pastStats.bySubject.length} />
                   <StatTile label="Years" value={pastStats.byYear.length} tint={colors.accent} />
                 </View>
-
                 <View style={[styles.statRow, { marginTop: spacing.md }]}>
                   <StatTile label="Sessions" value={pastStats.bySession.length} />
                   <StatTile label="Exam Types" value={pastStats.byExamType.length} tint={colors.primary} />
@@ -491,7 +538,7 @@ export default function AdminPanelScreen() {
                 </Card>
 
                 <Card>
-                  <Text style={styles.cardTitle}>Top Teachers (Past Contributors)</Text>
+                  <Text style={styles.cardTitle}>Top Teachers</Text>
                   {pastStats.byTeacher.slice(0, 5).map((t) => (
                     <View key={t._id} style={styles.statLine}>
                       <View>
@@ -521,9 +568,7 @@ export default function AdminPanelScreen() {
                     {pastStats.recent.map((r) => (
                       <View key={r._id} style={styles.recentRow}>
                         <Text style={styles.recentText} numberOfLines={1}>{r.questionText}</Text>
-                        <Text style={styles.subSmall}>
-                          {r.subject || ''} {r.pastQuestionYear ? `· ${r.pastQuestionYear}` : ''} · {r.creator?.name || ''} · {r.movedToPastAt ? new Date(r.movedToPastAt).toLocaleDateString() : ''}
-                        </Text>
+                        <Text style={styles.subSmall}>{r.subject || ''} {r.pastQuestionYear ? `· ${r.pastQuestionYear}` : ''} · {r.creator?.name || ''} · {r.movedToPastAt ? new Date(r.movedToPastAt).toLocaleDateString() : ''}</Text>
                       </View>
                     ))}
                   </Card>
@@ -584,13 +629,10 @@ export default function AdminPanelScreen() {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.name} numberOfLines={2}>{q.questionText}</Text>
-                      <Text style={styles.sub}>
-                        {q.subject || 'No subject'} · {q.difficulty} · {q.points}pt · Year: {q.pastQuestionYear || '—'} {q.pastQuestionSession ? `· ${q.pastQuestionSession}` : ''} {q.pastQuestionExamType ? `· ${q.pastQuestionExamType}` : ''}
-                      </Text>
+                      <Text style={styles.sub}>{q.subject || 'No subject'} · {q.difficulty} · {q.points}pt · Year: {q.pastQuestionYear || '—'} {q.pastQuestionSession ? `· ${q.pastQuestionSession}` : ''} {q.pastQuestionExamType ? `· ${q.pastQuestionExamType}` : ''}</Text>
                       <Text style={styles.subSmall}>by {creator?.name || 'Unknown'} · archived {q.movedToPastAt ? new Date(q.movedToPastAt).toLocaleDateString() : ''}</Text>
                     </View>
                   </Pressable>
-
                   <View style={styles.actions}>
                     <Button title="Restore" variant="secondary" size="sm" style={{ flex: 1 }} onPress={() => restorePastOne(q)} />
                     <Button title="Delete" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => deletePastOne(q)} />
@@ -615,18 +657,8 @@ const makeStyles = (colors: Colors) =>
   StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   tabStrip: { maxHeight: 56, backgroundColor: colors.card },
-  tabStripInner: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    gap: spacing.sm,
-    alignItems: 'center',
-  },
-  tab: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 8,
-    borderRadius: radius.pill,
-    backgroundColor: colors.bg,
-  },
+  tabStripInner: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: spacing.sm, alignItems: 'center' },
+  tab: { paddingHorizontal: spacing.lg, paddingVertical: 8, borderRadius: radius.pill, backgroundColor: colors.bg },
   tabActive: { backgroundColor: colors.primary },
   tabText: { fontSize: 14, fontWeight: '600', color: colors.textMuted },
   tabTextActive: { color: colors.white },
@@ -658,4 +690,7 @@ const makeStyles = (colors: Colors) =>
   checkOn: { backgroundColor: colors.primary, borderColor: colors.primary },
   checkMark: { color: colors.white, fontSize: 13, fontWeight: '900' },
   emptyText: { fontSize: 14, color: colors.textMuted, textAlign: 'center' },
+  sectionLabel: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md, marginTop: spacing.sm },
+  sectionNote: { fontSize: 12, color: colors.textLight, marginTop: spacing.sm },
+  emptyNote: { fontSize: 14, color: colors.textMuted, textAlign: 'center', marginTop: spacing.xl, lineHeight: 21 },
 });

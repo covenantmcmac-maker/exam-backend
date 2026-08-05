@@ -1,15 +1,30 @@
 import { request, uploadFile } from './client';
 import type { UploadableFile } from './client';
 import type {
+  AdminPaymentsResult,
   AdminStats,
+  AppConfig,
   Exam,
   ExamAttempt,
+  ExamReview,
   ExamStats,
+  InitiatePaymentResult,
+  PastExam,
+  Payment,
+  PaymentPurpose,
   Question,
   Role,
+  SecurityFlagResult,
   SubmitResult,
   User,
+  VerifyPaymentResult,
 } from './types';
+
+/* ----------------------------------------------------------------- config */
+
+export const configApi = {
+  get: () => request<AppConfig>('/api/config', { auth: false }),
+};
 
 /* ------------------------------------------------------------------ auth */
 
@@ -35,6 +50,12 @@ export const authApi = {
     }),
 
   me: () => request<{ user: User }>('/api/auth/me'),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ message: string }>('/api/auth/change-password', {
+      method: 'PATCH',
+      body: { currentPassword, newPassword },
+    }),
 
   guestRegister: (name: string, email: string, examCode: string) =>
     request<AuthResponse & { examId: string }>('/api/auth/guest-register', {
@@ -74,6 +95,16 @@ export const examsApi = {
     ),
 
   take: (id: string) => request<Exam>(`/api/exams/${id}/take`),
+
+  /** Paid past-question library, organised by subject and year. */
+  past: (params: { subject?: string; year?: number; search?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, String(v));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ exams: PastExam[] }>(`/api/exams/past${suffix}`);
+  },
 
   forEdit: (id: string) => request<Exam>(`/api/exams/${id}/edit`),
 
@@ -217,7 +248,21 @@ export const attemptsApi = {
   submit: (attemptId: string) =>
     request<SubmitResult>(`/api/attempts/${attemptId}/submit`, { method: 'POST' }),
 
+  reportViolation: (attemptId: string, type: 'copy' | 'paste' | 'screenshot' | 'app-background' | 'print-screen') =>
+    request<{ message: string; violationCount: number; submitted: boolean; result?: SubmitResult }>(
+      `/api/attempts/${attemptId}/violation`,
+      { method: 'POST', body: { type } }
+    ),
+  flagSecurity: (attemptId: string, reason: string) =>
+    request<SecurityFlagResult>(`/api/attempts/${attemptId}/security-flag`, {
+      method: 'POST',
+      body: { reason },
+    }),
+
   myAttempts: () => request<ExamAttempt[]>('/api/attempts/my-attempts'),
+
+  review: (attemptId: string) =>
+    request<ExamReview>(`/api/attempts/${attemptId}/review`),
 
   grade: (attemptId: string, grades: { questionId: string; pointsEarned: number }[]) =>
     request<{ message: string; attempt: ExamAttempt }>(`/api/attempts/${attemptId}/grade`, {
@@ -227,6 +272,29 @@ export const attemptsApi = {
 
   remove: (attemptId: string) =>
     request<{ message: string }>(`/api/attempts/${attemptId}`, { method: 'DELETE' }),
+};
+
+/* --------------------------------------------------------------- payments */
+
+export const paymentsApi = {
+  initiate: (examId: string, purpose: PaymentPurpose, attemptId?: string) =>
+    request<InitiatePaymentResult>('/api/payments/initiate', {
+      method: 'POST',
+      body: { examId, purpose, attemptId },
+    }),
+
+  /** Confirm payment after returning from the Paystack checkout. */
+  verify: (reference: string) =>
+    request<VerifyPaymentResult>(`/api/payments/${reference}/verify`),
+
+  /** Sandbox-only: marks a pending payment paid when no gateway is configured. */
+  devComplete: (reference: string) =>
+    request<{ message: string; payment: Payment }>(
+      `/api/payments/${reference}/dev-complete`,
+      { method: 'POST' }
+    ),
+
+  myPayments: () => request<Payment[]>('/api/payments/my-payments'),
 };
 
 /* ----------------------------------------------------------------- admin */
@@ -264,6 +332,8 @@ export const adminApi = {
 
   removeUser: (id: string) =>
     request<{ message: string }>(`/api/admin/users/${id}`, { method: 'DELETE' }),
+
+  payments: () => request<AdminPaymentsResult>('/api/admin/payments'),
 
   exams: () => request<Exam[]>('/api/admin/exams'),
 
