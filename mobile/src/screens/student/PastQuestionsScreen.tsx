@@ -297,7 +297,8 @@ function ExamCard({
   const fee = exam.pricing?.entryFee || 0;
   const reviewFee = exam.pricing?.reviewFee || 0;
   const locked = !exam.purchasedEntry;
-  const usedUp = exam.attemptsLeft <= 0;
+  const unlimited = !!exam.unlimited;
+  const usedUp = !unlimited && exam.attemptsLeft <= 0;
 
   return (
     <Card style={styles.examCard}>
@@ -356,6 +357,9 @@ function ExamCard({
           You've used all {exam.maxAttempts} attempt{exam.maxAttempts === 1 ? '' : 's'} for this
           paper.
         </Text>
+      )}
+      {!locked && unlimited && (
+        <Text style={styles.lockedHint}>Unlimited practice attempts after purchase.</Text>
       )}
     </Card>
   );

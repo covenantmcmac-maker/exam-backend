@@ -6,8 +6,10 @@ const Payment = require('../models/Payment');
  *   • entry fee  — required before a student can START a paid exam
  *   • review fee — required before a student can OPEN the answer review
  *
- * Teacher-set exams are always free to take (entryFee is forced to 0), but
- * their answer review can still carry a fee set by the teacher.
+ * Regular teacher exams (source === 'teacher') are always free to take
+ * (entryFee is forced to 0 on create). A teacher can convert a finished exam
+ * into a paid past-question paper (source === 'past') with an entry fee that
+ * students pay via Paystack. Review fees are optional on any past paper.
  */
 
 /** Read pricing safely (old exams may predate the pricing field). */

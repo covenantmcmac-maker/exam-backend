@@ -67,14 +67,52 @@ router.post('/', auth, authorize('teacher', 'admin'), async (req, res) => {
   }
 });
 
-// GET TEACHER EXAMS
+// GET TEACHER EXAMS (active/draft only; past papers via their own endpoint)
 router.get('/my-exams', auth, authorize('teacher', 'admin'), async (req, res) => {
   try {
-    const exams = await Exam.find({ creator: req.user._id })
+    const exams = await Exam.find({
+      creator: req.user._id,
+      source: { $ne: 'past' }
+    })
       .sort({ createdAt: -1 });
     res.json(exams);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching exams' });
+  }
+});
+
+// GET TEACHER'S PAST QUESTION PAPERS (for the teacher dashboard/sales view)
+router.get('/my-past', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const exams = await Exam.find({
+      creator: req.user._id,
+      source: 'past'
+    }).sort({ createdAt: -1 });
+
+    // Enrich with sales counts
+    const Payment = require('../models/Payment');
+    const enriched = await Promise.all(
+      exams.map(async (exam) => {
+        const sales = await Payment.countDocuments({
+          exam: exam._id,
+          status: 'paid',
+          purpose: 'entry'
+        });
+        const revenue = await Payment.aggregate([
+          { $match: { exam: exam._id, status: 'paid', purpose: 'entry' } },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]);
+        return {
+          ...exam.toObject(),
+          salesCount: sales,
+          totalRevenue: revenue[0]?.total || 0
+        };
+      })
+    );
+    res.json(enriched);
+  } catch (error) {
+    console.error('My past papers error:', error);
+    res.status(500).json({ message: 'Error fetching your past questions' });
   }
 });
 
@@ -89,7 +127,8 @@ router.post('/join', auth, async (req, res) => {
 
     const exam = await Exam.findOne({
       accessCode: accessCode.toUpperCase(),
-      'settings.isPublished': true
+      'settings.isPublished': true,
+      source: { $ne: 'past' } // past papers are NOT joinable by access code
     }).populate('creator', 'name');
 
     if (!exam) {
@@ -141,7 +180,8 @@ router.post('/join-public', async (req, res) => {
 
     const exam = await Exam.findOne({
       accessCode: accessCode.toUpperCase(),
-      'settings.isPublished': true
+      'settings.isPublished': true,
+      source: { $ne: 'past' }
     }).populate('creator', 'name');
 
     if (!exam) {
@@ -190,8 +230,9 @@ router.post('/join-public', async (req, res) => {
 });
 
 // PAST QUESTION PAPERS — the paid library
-// Published, platform-owned papers organised by subject + year. Students see
-// the price, whether they already bought entry, and whether they may start.
+// All published past papers (both admin platform papers and teacher-listed
+// papers). maxAttempts === 0 means UNLIMITED retakes. Students see the price,
+// whether they already bought entry, and whether they may start.
 router.get('/past', auth, async (req, res) => {
   try {
     const { subject, year, search } = req.query;
@@ -210,7 +251,8 @@ router.get('/past', auth, async (req, res) => {
     }
 
     const exams = await Exam.find(filter)
-      .select('title description subject year source pricing settings questions')
+      .select('title description subject year creator source pricing settings questions')
+      .populate('creator', 'name')
       .sort({ year: -1, subject: 1, createdAt: -1 });
 
     const now = new Date();
@@ -232,9 +274,12 @@ router.get('/past', auth, async (req, res) => {
         status: 'in-progress'
       });
 
+      // 0 means unlimited; otherwise enforce maxAttempts.
+      const maxAttempts = exam.settings.maxAttempts || 0;
+      const unlimited = maxAttempts === 0;
       const startable =
         purchasedEntry &&
-        completedCount < (exam.settings.maxAttempts || 1) &&
+        (unlimited || completedCount < maxAttempts) &&
         (!exam.settings.startDate || new Date(exam.settings.startDate) <= now) &&
         (!exam.settings.endDate || new Date(exam.settings.endDate) >= now);
 
@@ -245,19 +290,20 @@ router.get('/past', auth, async (req, res) => {
         subject: exam.subject,
         year: exam.year,
         source: exam.source,
+        creatorName: exam.creator && typeof exam.creator === 'object' ? exam.creator.name : undefined,
         questionCount: exam.questions?.length || 0,
         settings: {
           duration: exam.settings.duration,
           totalMarks: exam.settings.totalMarks,
           passingMarks: exam.settings.passingMarks,
-          maxAttempts: exam.settings.maxAttempts,
+          maxAttempts,
           allowReview: Boolean(exam.settings.allowReview)
         },
         pricing,
         purchasedEntry,
         completedCount,
-        maxAttempts: exam.settings.maxAttempts || 1,
-        attemptsLeft: Math.max(0, (exam.settings.maxAttempts || 1) - completedCount),
+        unlimited,
+        attemptsLeft: unlimited ? Infinity : Math.max(0, maxAttempts - completedCount),
         inProgressAttempt: inProgress ? { _id: inProgress._id } : null,
         startable,
         endsAt: exam.settings.endDate || null
@@ -268,6 +314,119 @@ router.get('/past', auth, async (req, res) => {
   } catch (error) {
     console.error('Past exams error:', error);
     res.status(500).json({ message: 'Error fetching past question papers' });
+  }
+});
+
+// CONVERT A TEACHER'S OWN EXAM INTO A PAST-QUESTION PAPER FOR SALE
+// Teachers set an entry fee (price students pay to practice). The review fee
+// defaults to 0 (review included in purchase — the common "buy once, practice
+// forever" expectation), but teachers can set it too. After conversion:
+//   - source becomes 'past'
+//   - the exam is unpublished so it can't be joined by access code for free
+//   - a fresh access code is generated so the old code is invalid
+//   - maxAttempts is set to 0 meaning UNLIMITED practice attempts
+//   - pricing.entryFee is set (pricing.reviewFee defaults to 0)
+// Students buy via the same Paystack flow used for admin past papers.
+router.post('/:id/sell-as-past', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const exam = await Exam.findOne({
+      _id: req.params.id,
+      creator: req.user._id
+    });
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+    if (exam.source === 'past') {
+      return res.status(400).json({ message: 'This exam is already listed as a past question.' });
+    }
+    if (!exam.questions || exam.questions.length === 0) {
+      return res.status(400).json({ message: 'Add at least one question before listing.' });
+    }
+
+    const entryFeeRaw = Number(req.body.entryFee);
+    if (!Number.isFinite(entryFeeRaw) || entryFeeRaw < 0) {
+      return res.status(400).json({ message: 'A valid entry fee (≥ 0) is required.' });
+    }
+    const reviewFeeRaw = req.body.reviewFee !== undefined
+      ? Math.max(0, Number(req.body.reviewFee) || 0)
+      : 0;
+
+    exam.source = 'past';
+    exam.year = req.body.year ? Number(req.body.year) : exam.year;
+    if (req.body.description !== undefined) exam.description = req.body.description;
+    exam.pricing = {
+      entryFee: entryFeeRaw,
+      reviewFee: reviewFeeRaw,
+      currency: exam.pricing?.currency || 'NGN'
+    };
+    exam.settings.isPublished = true; // past papers need to be published to appear in the store
+    // 0 = unlimited attempts (we treat 0 specially in the past-papers list and attempt start)
+    exam.settings.maxAttempts = 0;
+    // Rotate access code so it can't be shared for free entry.
+    exam.accessCode = crypto.randomBytes(4).toString('hex').toUpperCase() + '_PQ';
+
+    await exam.save();
+
+    res.json({ message: 'Exam listed as a past question for sale.', exam });
+  } catch (error) {
+    console.error('Sell-as-past error:', error);
+    res.status(500).json({ message: 'Error listing exam as past question.' });
+  }
+});
+
+// UN-LIST A PAST PAPER (convert back to teacher draft)
+// Available to the teacher who owns it, or to admins.
+router.post('/:id/unlist-past', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const exam = await Exam.findOne({
+      _id: req.params.id,
+      creator: req.user._id
+    });
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+    if (exam.source !== 'past') {
+      return res.status(400).json({ message: 'This exam is not listed as a past question.' });
+    }
+    exam.source = 'teacher';
+    exam.pricing.entryFee = 0;
+    exam.settings.isPublished = false;
+    exam.settings.maxAttempts = 1;
+    exam.accessCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+    await exam.save();
+    res.json({ message: 'Removed from Past Questions store.', exam });
+  } catch (error) {
+    console.error('Unlist past error:', error);
+    res.status(500).json({ message: 'Error removing exam from store.' });
+  }
+});
+
+// TEACHER: update past-paper pricing (without going through full exam update)
+router.patch('/:id/pricing', auth, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const exam = await Exam.findOne({
+      _id: req.params.id,
+      creator: req.user._id
+    });
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+    if (exam.source !== 'past') {
+      return res.status(400).json({ message: 'This is not a past-question paper.' });
+    }
+    const { entryFee, reviewFee } = req.body;
+    if (entryFee !== undefined) {
+      const v = Math.max(0, Number(entryFee) || 0);
+      exam.pricing.entryFee = v;
+    }
+    if (reviewFee !== undefined) {
+      exam.pricing.reviewFee = Math.max(0, Number(reviewFee) || 0);
+    }
+    await exam.save();
+    res.json({ message: 'Pricing updated.', exam });
+  } catch (error) {
+    console.error('Update pricing error:', error);
+    res.status(500).json({ message: 'Error updating pricing.' });
   }
 });
 
@@ -412,23 +571,28 @@ router.put('/:id', auth, authorize('teacher', 'admin'), async (req, res) => {
       return res.status(404).json({ message: 'Exam not found' });
     }
 
-    // Teachers may not convert their exam into a platform past paper, and
-    // may not put a price on taking it. Admins can set any pricing.
+    // Teachers cannot change source via generic update (use /sell-as-past).
+    // Admins can set any source.
     if (req.body.source === 'past' && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Only admins can mark an exam as a past paper' });
+      return res.status(403).json({
+        message: 'Use "Sell as past question" to list your exam for sale.'
+      });
     }
     if (req.body.source && req.user.role === 'admin') {
       exam.source = req.body.source;
     }
-    if (req.body.year !== undefined && req.user.role === 'admin') {
+    if (req.body.year !== undefined) {
       exam.year = req.body.year ? Number(req.body.year) : undefined;
     }
 
-    // Pricing (NGN). For teacher exams entry is always free; the teacher
-    // decides their own answer-review fee. Admins set both for past papers.
+    // Pricing (NGN). Teachers set their own entry+review fees for papers
+    // they have converted to past; admin can always edit any pricing.
     if (req.body.pricing) {
       const pricing = req.body.pricing;
-      if (req.user.role === 'admin' && pricing.entryFee !== undefined) {
+      const canSetEntry =
+        req.user.role === 'admin' ||
+        (req.user.role === 'teacher' && exam.source === 'past');
+      if (canSetEntry && pricing.entryFee !== undefined) {
         exam.pricing.entryFee = Math.max(0, Number(pricing.entryFee) || 0);
       }
       if (pricing.reviewFee !== undefined) {

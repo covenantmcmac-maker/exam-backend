@@ -123,11 +123,10 @@ export default function StudentHomeScreen({ navigation }: Props) {
         <Card style={{ marginTop: spacing.lg }}>
           <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>📚 Past Questions</Text>
           <Text style={{ fontSize: 13, color: colors.textMuted, marginTop: 4, marginBottom: spacing.md, lineHeight: 18 }}>
-            Practice with questions from previous exams. Teachers archive old questions here for revision.
+            Buy past exam papers set by teachers, then practice them as many times as you like.
           </Text>
           <View style={{ flexDirection: 'row', gap: spacing.md }}>
-            <Button title="Browse" variant="secondary" style={{ flex: 1 }} onPress={() => navigation.navigate('PastQuestions' as any)} />
-            <Button title="🎯 Practice Test" style={{ flex: 1 }} onPress={() => navigation.navigate('PracticeSetup' as any)} />
+            <Button title="Browse store" variant="secondary" style={{ flex: 1 }} onPress={() => navigation.navigate('PastQuestions' as any)} />
           </View>
         </Card>
 

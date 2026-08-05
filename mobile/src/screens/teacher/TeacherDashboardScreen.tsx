@@ -85,10 +85,10 @@ export default function TeacherDashboardScreen({ navigation }: Props) {
         </View>
         <View style={styles.actionRow}>
           <Button
-            title="📚 Past Questions"
+            title="🛒 My Past Qs"
             variant="ghost"
             style={{ flex: 1, marginTop: spacing.md }}
-            onPress={() => navigation.navigate('PastQuestions' as any)}
+            onPress={() => navigation.navigate('TeacherPastQuestions' as any)}
           />
           <Button
             title="❓ Manage Qs"

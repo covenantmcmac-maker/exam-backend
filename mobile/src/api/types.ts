@@ -56,6 +56,7 @@ export interface PastExam {
   subject?: string;
   year?: number;
   source: ExamSource;
+  creatorName?: string;
   questionCount: number;
   settings: {
     duration: number;
@@ -69,6 +70,7 @@ export interface PastExam {
   completedCount: number;
   maxAttempts: number;
   attemptsLeft: number;
+  unlimited?: boolean;
   inProgressAttempt: { _id: string } | null;
   startable: boolean;
   endsAt?: string | null;
@@ -174,6 +176,8 @@ export interface Exam {
   questions: ExamQuestionRef[];
   settings: ExamSettings;
   accessCode?: string;
+  salesCount?: number;
+  totalRevenue?: number;
   createdAt?: string;
 }
 

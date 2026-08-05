@@ -38,31 +38,7 @@ const question = {
   points: 2,
   difficulty: 'easy',
   subject: 'Maths',
-<<<<<<< HEAD
-  isPastQuestion: false,
-  movedToPastAt: null,
-};
-
-const pastQuestion = {
-  _id: 'pq1',
-  questionText: 'What is the capital of France? (Past 2022)',
-  questionType: 'multiple-choice',
-  options: [
-    { _id: 'o1', text: 'London', isCorrect: false },
-    { _id: 'o2', text: 'Paris', isCorrect: true },
-    { _id: 'o3', text: 'Berlin', isCorrect: false },
-  ],
-  points: 2,
-  difficulty: 'medium',
-  subject: 'Geography',
-  isPastQuestion: true,
-  movedToPastAt: new Date().toISOString(),
-  pastQuestionYear: 2022,
-  pastQuestionSession: 'June',
-  pastQuestionExamType: 'Final',
-=======
   explanation: 'Two plus two equals four.',
->>>>>>> origin/main
 };
 
 const exam = {
@@ -536,10 +512,6 @@ const server = http.createServer((req, res) => {
           totalPastQuestions: 1,
           totalAttempts: 1,
           completedAttempts: 1,
-<<<<<<< HEAD
-          pastByYear: [{ _id: 2022, count: 1 }],
-          pastBySubject: [{ _id: 'Geography', count: 1 }],
-=======
           payments: {
             total: 0,
             entryCount: 0,
@@ -549,7 +521,6 @@ const server = http.createServer((req, res) => {
             reviewRevenue: 0,
             currency: 'NGN',
           },
->>>>>>> origin/main
         });
 
       case 'GET /api/admin/past-questions':

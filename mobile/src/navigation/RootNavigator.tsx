@@ -17,18 +17,13 @@ import RegisterScreen from '../screens/auth/RegisterScreen';
 import GuestJoinScreen from '../screens/auth/GuestJoinScreen';
 
 import StudentHomeScreen from '../screens/student/StudentHomeScreen';
+import PastExamPapersScreen from '../screens/student/PastQuestionsScreen';
 import ResultsScreen from '../screens/student/ResultsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
-// Archive of past questions (question-level, our feature)
-import PastQuestionsArchiveScreen from '../screens/PastQuestionsScreen';
-// Monetised past exam papers (exam-level, main feature)
-import PastExamPapersScreen from '../screens/student/PastQuestionsScreen';
-import PracticeSetupScreen from '../screens/student/PracticeSetupScreen';
-import PracticeExamScreen from '../screens/student/PracticeExamScreen';
-import PracticeResultScreen from '../screens/student/PracticeResultScreen';
 
 import TeacherDashboardScreen from '../screens/teacher/TeacherDashboardScreen';
 import TeacherExamsScreen from '../screens/teacher/TeacherExamsScreen';
+import TeacherPastQuestionsScreen from '../screens/teacher/TeacherPastQuestionsScreen';
 import QuestionBankScreen from '../screens/teacher/QuestionBankScreen';
 import ExamBuilderScreen from '../screens/teacher/ExamBuilderScreen';
 import ExamStatsScreen from '../screens/teacher/ExamStatsScreen';
@@ -37,10 +32,11 @@ import QuestionEditorScreen from '../screens/teacher/QuestionEditorScreen';
 import ExamTakingScreen from '../screens/exam/ExamTakingScreen';
 import ExamResultScreen from '../screens/exam/ExamResultScreen';
 import ExamReviewScreen from '../screens/exam/ExamReviewScreen';
-import { paymentsApi } from '../api/endpoints';
-import { useDialog } from '../components/Dialog';
 import BulkImportScreen from '../screens/teacher/BulkImportScreen';
 import AdminPanelScreen from '../screens/admin/AdminPanelScreen';
+
+import { paymentsApi } from '../api/endpoints';
+import { useDialog } from '../components/Dialog';
 
 import type {
   AuthStackParamList,
@@ -96,11 +92,6 @@ function StudentFlow() {
         options={{ title: 'Past Qs', tabBarIcon: icon('📚'), tabBarLabel: 'Past Qs' }}
       />
       <StudentTabs.Screen
-        name="QuestionArchive"
-        component={PastQuestionsArchiveScreen}
-        options={{ title: 'Archive', tabBarIcon: icon('🗂️'), tabBarLabel: 'Archive' }}
-      />
-      <StudentTabs.Screen
         name="Results"
         component={ResultsScreen}
         options={{ tabBarIcon: icon('📊') }}
@@ -145,8 +136,7 @@ function TeacherFlow() {
 
 /**
  * On web, Paystack redirects the browser back to the app after payment with
- * ?reference=… in the URL. Verify it once so the user sees confirmation
- * without having to tap anything.
+ * ?reference=… in the URL. Verify it once so the user sees confirmation.
  */
 function PaymentRedirectHandler() {
   const dialog = useDialog();
@@ -158,7 +148,6 @@ function PaymentRedirectHandler() {
     const reference = params.get('reference') || params.get('trxref');
     if (!reference) return;
 
-    // Clean the URL so a refresh does not re-verify.
     const clean = window.location.pathname + window.location.hash;
     window.history.replaceState({}, '', clean);
 
@@ -173,11 +162,11 @@ function PaymentRedirectHandler() {
         } else {
           await dialog.notify(
             'Payment not confirmed yet',
-            'We are still waiting for your payment to be confirmed. Check your results or try again in a moment.'
+            'We are still waiting for your payment to be confirmed.'
           );
         }
       } catch {
-        /* Non-fatal: the verify button in the pay flow covers this case. */
+        /* Non-fatal */
       }
     })();
   }, [dialog]);
@@ -267,29 +256,9 @@ export default function RootNavigator() {
               options={{ title: 'Admin panel' }}
             />
             <RootStack.Screen
-              name="PastQuestions"
-              component={PastExamPapersScreen}
-              options={{ title: 'Past Questions' }}
-            />
-            <RootStack.Screen
-              name="PastQuestionsArchive"
-              component={PastQuestionsArchiveScreen}
-              options={{ title: 'Past Questions Archive' }}
-            />
-            <RootStack.Screen
-              name="PracticeSetup"
-              component={PracticeSetupScreen}
-              options={{ title: 'Practice Setup' }}
-            />
-            <RootStack.Screen
-              name="PracticeExam"
-              component={PracticeExamScreen}
-              options={{ title: 'Practice Exam', headerShown: false, gestureEnabled: false }}
-            />
-            <RootStack.Screen
-              name="PracticeResult"
-              component={PracticeResultScreen}
-              options={{ title: 'Practice Result' }}
+              name="TeacherPastQuestions"
+              component={TeacherPastQuestionsScreen}
+              options={{ title: 'My Past Questions' }}
             />
           </>
         )}

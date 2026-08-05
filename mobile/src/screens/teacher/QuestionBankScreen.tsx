@@ -487,7 +487,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
                 togglePick(item._id);
               }}
             >
-              <Card style={[isPicked ? styles.cardPicked : undefined, item.isPastQuestion ? styles.cardPast : undefined]}>
+              <Card style={[isPicked && styles.cardPicked, item.isPastQuestion && styles.cardPast].filter(Boolean) as any}>
                 <View style={styles.rowTop}>
                   {selectMode && (
                     <View style={[styles.check, isPicked && styles.checkOn]}>

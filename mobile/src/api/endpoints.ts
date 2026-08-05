@@ -120,6 +120,33 @@ export const examsApi = {
       body: payload,
     }),
 
+  /** Teacher: list their past-question papers (with sales counts). */
+  myPast: () =>
+    request<(Exam & { salesCount: number; totalRevenue: number })[]>('/api/exams/my-past'),
+
+  /** Teacher: convert a finished exam into a paid past-question paper. */
+  sellAsPast: (
+    id: string,
+    payload: { entryFee: number; reviewFee?: number; year?: number; description?: string }
+  ) =>
+    request<{ message: string; exam: Exam }>(`/api/exams/${id}/sell-as-past`, {
+      method: 'POST',
+      body: payload,
+    }),
+
+  /** Teacher: unlist a past paper back to a private draft. */
+  unlistPast: (id: string) =>
+    request<{ message: string; exam: Exam }>(`/api/exams/${id}/unlist-past`, {
+      method: 'POST',
+    }),
+
+  /** Teacher: update past-paper pricing. */
+  updatePricing: (id: string, payload: { entryFee?: number; reviewFee?: number }) =>
+    request<{ message: string; exam: Exam }>(`/api/exams/${id}/pricing`, {
+      method: 'PATCH',
+      body: payload,
+    }),
+
   remove: (id: string) =>
     request<{ message: string }>(`/api/exams/${id}`, { method: 'DELETE' }),
 };
