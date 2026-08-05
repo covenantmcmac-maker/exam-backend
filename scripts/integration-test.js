@@ -195,7 +195,7 @@ async function main() {
 
     console.log('\nReview gate (second charge)');
     const reviewLocked = await req('GET', `/api/attempts/${attemptId}/review`, { token: studentTok });
-    check('review without review fee → 402 with fee', reviewLocked.status === 402 && reviewLocked.body.amount === 100 && reviewLocked.body.purpose === 'review' && reviewLocked.body.attemptId === attemptId);
+    check('review without review fee → 402 with fee', reviewLocked.status === 402 && reviewLocked.body.amount === 100 && reviewLocked.body.purpose === 'review' && reviewLocked.body.attemptId === attemptId && reviewLocked.body.examId === pastId);
 
     const reviewInit = await req('POST', '/api/payments/initiate', { token: studentTok, body: { examId: pastId, purpose: 'review', attemptId } });
     check('review payment initiated against attempt', reviewInit.status === 201 && reviewInit.body.payment.purpose === 'review' && reviewInit.body.payment.attempt === attemptId);
@@ -203,6 +203,11 @@ async function main() {
 
     const review = await req('GET', `/api/attempts/${attemptId}/review`, { token: studentTok });
     check('review unlocked after fee', review.status === 200 && review.body.questions.length === 2, `status=${review.status} body=${JSON.stringify(review.body).slice(0, 200)}`);
+
+    // Regression: older cached app builds initiate review payments with only
+    // the attemptId — the server must resolve the exam instead of 400ing.
+    const legacyInit = await req('POST', '/api/payments/initiate', { token: studentTok, body: { purpose: 'review', attemptId } });
+    check('review payment without examId resolves exam from attempt', legacyInit.status === 200 && legacyInit.body.payment && legacyInit.body.payment.exam === pastId, `status=${legacyInit.status} body=${JSON.stringify(legacyInit.body)}`);
     const first = review.body.questions.find((i) => i.questionId === q1.body._id);
     check('review shows correct answer + explanation + selection',
       first.correctOptionIndex === 1 && first.correctAnswer === '4' && first.selectedOption === 1 && first.isCorrect === true && first.explanation === 'Basic addition',

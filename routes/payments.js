@@ -18,7 +18,16 @@ function makeReference() {
 // Body: { examId, purpose: 'entry' | 'review', attemptId? }
 router.post('/initiate', auth, async (req, res) => {
   try {
-    const { examId, purpose, attemptId } = req.body;
+    let { examId } = req.body;
+    const { purpose, attemptId } = req.body;
+
+    // Older cached app builds only send attemptId for review payments —
+    // resolve the exam from the attempt instead of rejecting them.
+    // Ownership of the attempt is still enforced below.
+    if (!examId && purpose === 'review' && attemptId) {
+      const attemptRef = await ExamAttempt.findById(attemptId).select('exam');
+      if (attemptRef) examId = attemptRef.exam;
+    }
 
     if (!examId || !['entry', 'review'].includes(purpose)) {
       return res.status(400).json({ message: 'examId and purpose are required' });

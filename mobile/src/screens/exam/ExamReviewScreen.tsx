@@ -44,7 +44,7 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Set when the review fee hasn't been paid yet (server returned 402).
-  const [paywall, setPaywall] = useState<{ amount: number } | null>(null);
+  const [paywall, setPaywall] = useState<{ amount: number; examId: string } | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [pendingRef, setPendingRef] = useState<string | null>(null);
@@ -65,9 +65,14 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
       setReview(data);
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {
-        // Review fee not paid yet — show the paywall.
-        const amount = Number((e.data as { amount?: unknown })?.amount);
-        setPaywall({ amount: Number.isFinite(amount) ? amount : 0 });
+        // Review fee not paid yet — show the paywall. The 402 body carries
+        // the examId we need to start the payment: the review payload itself
+        // is still locked at this point, so it can never come from `review`.
+        const data = e.data as { amount?: unknown; examId?: unknown } | undefined;
+        const amount = Number(data?.amount);
+        const examId =
+          typeof data?.examId === 'string' ? data.examId : String(data?.examId ?? '');
+        setPaywall({ amount: Number.isFinite(amount) ? amount : 0, examId });
         setReview(null);
       } else {
         setError(e instanceof Error ? e.message : 'Could not load review.');
@@ -107,9 +112,16 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
     setBusy(true);
     setError(null);
     try {
+      // The examId comes from the 402 paywall response — `review` is null
+      // here by definition, so `review?.exam?._id` can only be a fallback.
+      const examId = paywall.examId || review?.exam?._id || '';
+      if (!examId) {
+        setError('Could not identify the exam for this payment. Please go back and reopen the review.');
+        return;
+      }
       // The review fee is per attempt, so the payment is tied to this
       // specific attempt record.
-      const outcome = await initiatePayment(review?.exam?._id ?? '', 'review', attemptId);
+      const outcome = await initiatePayment(examId, 'review', attemptId);
       if (outcome.paid) {
         await dialog.notify('Payment successful 🎉', 'The answer review is now unlocked.');
         void load();
