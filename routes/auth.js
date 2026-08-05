@@ -117,6 +117,15 @@ router.post('/guest-register', async (req, res) => {
       });
     }
 
+    // Paid past-question papers cannot be taken by guests — payment requires
+    // a real account. Teacher exams (free entry) remain guest-friendly.
+    const pricing = exam.pricing || {};
+    if ((Number(pricing.entryFee) || 0) > 0) {
+      return res.status(403).json({
+        message: 'This exam requires payment. Please create an account to take it.'
+      });
+    }
+
     let user = await User.findOne({ email });
 
     if (!user) {
@@ -175,7 +184,6 @@ router.post('/guest-register', async (req, res) => {
     res.status(500).json({ message: 'Error joining exam' });
   }
 });
-
 
 // CHANGE PASSWORD
 router.patch('/change-password', auth, async (req, res) => {

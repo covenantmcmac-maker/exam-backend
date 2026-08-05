@@ -1,12 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, Card, EmptyState, Loading } from '../../components/ui';
-import { attemptsApi } from '../../api/endpoints';
+import { Button, Card, EmptyState, ErrorNote, Loading } from '../../components/ui';
+import { attemptsApi, configApi } from '../../api/endpoints';
+import { ApiError } from '../../api/client';
+import { useDialog } from '../../components/Dialog';
+import { formatFee, initiatePayment, openCheckout, verifyPayment } from '../../utils/payments';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
-import type { ExamReview, ReviewQuestion } from '../../api/types';
+import type { AppConfig, ExamReview, ReviewQuestion } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
 
@@ -34,34 +37,152 @@ function statusText(question: ReviewQuestion) {
 export default function ExamReviewScreen({ route, navigation }: Props) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const dialog = useDialog();
   const { attemptId } = route.params;
 
   const [review, setReview] = useState<ExamReview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Set when the review fee hasn't been paid yet (server returned 402).
+  const [paywall, setPaywall] = useState<{ amount: number } | null>(null);
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [pendingRef, setPendingRef] = useState<string | null>(null);
+
+  const symbol = config?.currencySymbol || '₦';
 
   useEffect(() => {
     navigation.setOptions({ title: 'Exam review' });
   }, [navigation]);
 
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setPaywall(null);
+    try {
+      const [data, cfg] = await Promise.all([attemptsApi.review(attemptId), configApi.get()]);
+      setConfig(cfg);
+      setReview(data);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 402) {
+        // Review fee not paid yet — show the paywall.
+        const amount = Number((e.data as { amount?: unknown })?.amount);
+        setPaywall({ amount: Number.isFinite(amount) ? amount : 0 });
+        setReview(null);
+      } else {
+        setError(e instanceof Error ? e.message : 'Could not load review.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [attemptId]);
+
   useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Confirm an opened Paystack checkout when the screen regains focus.
+  useEffect(() => {
+    if (!pendingRef) return;
     let cancelled = false;
     (async () => {
-      try {
-        const data = await attemptsApi.review(attemptId);
-        if (!cancelled) setReview(data);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load review.');
-      } finally {
-        if (!cancelled) setLoading(false);
+      const paid = await verifyPayment(pendingRef);
+      if (cancelled) return;
+      if (paid) {
+        setPendingRef(null);
+        await dialog.notify('Payment successful 🎉', 'The answer review is now unlocked.');
+        void load();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [attemptId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRef]);
+
+  /* ------------------------------------------------------------- paywall */
+
+  const payForReview = async () => {
+    if (!paywall) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // The review fee is per attempt, so the payment is tied to this
+      // specific attempt record.
+      const outcome = await initiatePayment(review?.exam?._id ?? '', 'review', attemptId);
+      if (outcome.paid) {
+        await dialog.notify('Payment successful 🎉', 'The answer review is now unlocked.');
+        void load();
+        return;
+      }
+      setPendingRef(outcome.reference);
+      await openCheckout(outcome.authorizationUrl);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Payment could not be started.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (loading) return <Loading text="Loading review…" />;
+
+  // Paid gate: pay the review fee to see the answers.
+  if (paywall) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.paywallWrap}>
+          <Card style={styles.paywallCard}>
+            <Text style={styles.paywallIcon}>🔓</Text>
+            <Text style={styles.paywallTitle}>Unlock the answer review</Text>
+            <Text style={styles.paywallText}>
+              See every question again, what you selected, the correct answers and the
+              explanations. This is a one-time payment for this attempt.
+            </Text>
+
+            {!!error && <ErrorNote message={error} />}
+
+            {pendingRef ? (
+              <>
+                <Text style={styles.paywallPending}>
+                  Payment pending… complete it in the Paystack window, then confirm.
+                </Text>
+                <Button
+                  title="I've paid — confirm"
+                  loading={busy}
+                  onPress={async () => {
+                    const paid = await verifyPayment(pendingRef);
+                    if (paid) {
+                      setPendingRef(null);
+                      await dialog.notify('Payment successful 🎉', 'Review unlocked.');
+                      void load();
+                    } else {
+                      await dialog.notify(
+                        'Not confirmed yet',
+                        "We couldn't find the payment yet. Check the Paystack page, then try again."
+                      );
+                    }
+                  }}
+                />
+              </>
+            ) : (
+              <Button
+                title={`Pay ${formatFee(paywall.amount, symbol)} & unlock`}
+                loading={busy}
+                onPress={() => void payForReview()}
+              />
+            )}
+
+            <Button
+              title="Go back"
+              variant="ghost"
+              style={{ marginTop: spacing.md }}
+              onPress={() => navigation.goBack()}
+            />
+          </Card>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (error || !review) {
     return (
@@ -200,6 +321,25 @@ const makeStyles = (colors: Colors) =>
     borderColor: colors.border,
     borderRadius: radius.md,
     padding: spacing.md,
+  },
+  paywallWrap: { flex: 1, justifyContent: 'center', padding: spacing.lg },
+  paywallCard: { alignItems: 'center', padding: spacing.xxl },
+  paywallIcon: { fontSize: 48 },
+  paywallTitle: { fontSize: 19, fontWeight: '800', color: colors.text, marginTop: spacing.md },
+  paywallText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    lineHeight: 21,
+    textAlign: 'center',
+    marginTop: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+  paywallPending: {
+    fontSize: 13,
+    color: colors.warning,
+    textAlign: 'center',
+    marginBottom: spacing.md,
+    fontWeight: '600',
   },
   summaryValue: { fontSize: 18, fontWeight: '800', color: colors.primary },
   summaryLabel: { fontSize: 12, color: colors.textMuted, marginTop: 2 },

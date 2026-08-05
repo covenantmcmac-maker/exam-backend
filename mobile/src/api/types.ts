@@ -1,5 +1,88 @@
 export type Role = 'student' | 'teacher' | 'admin';
 
+export type ExamSource = 'teacher' | 'past';
+
+export interface ExamPricing {
+  entryFee: number;
+  reviewFee: number;
+  currency: string;
+}
+
+export interface AppConfig {
+  currency: string;
+  currencySymbol: string;
+  defaultEntryFee: number;
+  defaultReviewFee: number;
+  paymentsConfigured: boolean;
+  paymentsDevMode: boolean;
+  paystackPublicKey: string;
+}
+
+export type PaymentPurpose = 'entry' | 'review';
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'expired';
+
+export interface Payment {
+  _id: string;
+  student: User | string;
+  exam: Exam | string;
+  attempt?: ExamAttempt | string | null;
+  purpose: PaymentPurpose;
+  amount: number;
+  currency: string;
+  provider: 'paystack' | 'sandbox';
+  reference: string;
+  status: PaymentStatus;
+  paidAt?: string;
+  createdAt?: string;
+}
+
+export interface InitiatePaymentResult {
+  message: string;
+  payment: Payment;
+  authorizationUrl: string | null;
+  devMode: boolean;
+}
+
+export interface VerifyPaymentResult {
+  payment: Payment;
+  paid: boolean;
+}
+
+/** One entry in the paid past-questions library. */
+export interface PastExam {
+  _id: string;
+  title: string;
+  description?: string;
+  subject?: string;
+  year?: number;
+  source: ExamSource;
+  questionCount: number;
+  settings: {
+    duration: number;
+    totalMarks: number;
+    passingMarks: number;
+    maxAttempts: number;
+    allowReview: boolean;
+  };
+  pricing: ExamPricing;
+  purchasedEntry: boolean;
+  completedCount: number;
+  maxAttempts: number;
+  attemptsLeft: number;
+  inProgressAttempt: { _id: string } | null;
+  startable: boolean;
+  endsAt?: string | null;
+}
+
+export interface AdminPaymentsResult {
+  payments: Payment[];
+  totals: {
+    totalRevenue: number;
+    entryCount: number;
+    reviewCount: number;
+  };
+}
+
 export interface User {
   id?: string;
   _id?: string;
@@ -65,6 +148,9 @@ export interface Exam {
   title: string;
   description?: string;
   subject?: string;
+  source?: ExamSource;
+  year?: number;
+  pricing?: ExamPricing;
   creator?: { _id?: string; name?: string } | string;
   questions: ExamQuestionRef[];
   settings: ExamSettings;
@@ -172,4 +258,13 @@ export interface AdminStats {
   totalQuestions: number;
   totalAttempts: number;
   completedAttempts: number;
+  payments: {
+    total: number;
+    entryCount: number;
+    reviewCount: number;
+    totalRevenue: number;
+    entryRevenue: number;
+    reviewRevenue: number;
+    currency: string;
+  };
 }

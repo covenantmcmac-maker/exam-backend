@@ -55,12 +55,40 @@ const exam = {
     shuffleQuestions: false,
     shuffleOptions: false,
     showResults: true,
-    allowReview: false,
+    allowReview: true,
     maxAttempts: 1,
     isPublished: true,
   },
   accessCode: 'ABCD1234',
 };
+
+// Paid past-question paper (Biology 2022) — the monetised flow.
+const pastExam = {
+  _id: 'e2',
+  title: 'Biology 2022',
+  description: 'Previous-years exam paper',
+  subject: 'Biology',
+  source: 'past',
+  year: 2022,
+  pricing: { entryFee: 300, reviewFee: 500, currency: 'NGN' },
+  questionCount: 10,
+  settings: {
+    duration: 60,
+    totalMarks: 40,
+    passingMarks: 20,
+    maxAttempts: 1,
+    allowReview: true,
+  },
+  purchasedEntry: false,
+  completedCount: 0,
+  maxAttempts: 1,
+  attemptsLeft: 1,
+  inProgressAttempt: null,
+  startable: false,
+};
+
+// References marked paid via the dev-mode payment flow.
+const paidReferences = new Set();
 
 const attempt = {
   _id: 'a1',
@@ -99,6 +127,41 @@ const server = http.createServer((req, res) => {
       body = {};
     }
     calls.push({ key, authed, body });
+
+    // Dynamic routes (path params).
+    const devCompleteMatch = key.match(/^POST \/api\/payments\/([^/]+)\/dev-complete$/);
+    if (devCompleteMatch) {
+      if (!authed) return send(res, 401, { message: 'No token, access denied' });
+      paidReferences.add(devCompleteMatch[1]);
+      return send(res, 200, {
+        message: 'Payment marked as paid (dev mode)',
+        payment: {
+          _id: 'p1',
+          reference: devCompleteMatch[1],
+          purpose: 'entry',
+          amount: 300,
+          currency: 'NGN',
+          status: 'paid',
+        },
+      });
+    }
+
+    const verifyMatch = key.match(/^GET \/api\/payments\/([^/]+)\/verify$/);
+    if (verifyMatch) {
+      if (!authed) return send(res, 401, { message: 'No token, access denied' });
+      const paid = paidReferences.has(verifyMatch[1]);
+      return send(res, 200, {
+        payment: {
+          _id: 'p1',
+          reference: verifyMatch[1],
+          purpose: 'entry',
+          amount: 300,
+          currency: 'NGN',
+          status: paid ? 'paid' : 'pending',
+        },
+        paid,
+      });
+    }
 
     // Routes that require a token.
     const needsAuth = [
@@ -167,6 +230,47 @@ const server = http.createServer((req, res) => {
       case 'GET /api/exams/my-exams':
         return send(res, 200, [exam]);
 
+      case 'GET /api/exams/past':
+        return send(res, 200, {
+          exams: [
+            {
+              ...pastExam,
+              purchasedEntry: paidReferences.has('PST-MOCK-1'),
+              startable: paidReferences.has('PST-MOCK-1'),
+            },
+          ],
+        });
+
+      case 'GET /api/config':
+        return send(res, 200, {
+          currency: 'NGN',
+          currencySymbol: '₦',
+          defaultEntryFee: 300,
+          defaultReviewFee: 500,
+          paymentsConfigured: false,
+          paymentsDevMode: true,
+          paystackPublicKey: '',
+        });
+
+      case 'POST /api/payments/initiate':
+        return send(res, 201, {
+          message: 'Payment initiated (dev mode)',
+          payment: {
+            _id: 'p1',
+            reference: 'PST-MOCK-1',
+            purpose: body.purpose || 'entry',
+            amount: body.purpose === 'review' ? 500 : 300,
+            currency: 'NGN',
+            provider: 'sandbox',
+            status: 'pending',
+          },
+          authorizationUrl: null,
+          devMode: true,
+        });
+
+      case 'GET /api/payments/my-payments':
+        return send(res, 200, []);
+
       case 'POST /api/exams':
         return send(res, 201, {
           message: 'Exam created successfully',
@@ -205,6 +309,16 @@ const server = http.createServer((req, res) => {
         });
 
       case 'POST /api/attempts/start':
+        if (body.examId === 'e2' && !paidReferences.has('PST-MOCK-1')) {
+          return send(res, 402, {
+            message: 'Payment required to take this exam.',
+            paymentRequired: true,
+            purpose: 'entry',
+            examId: 'e2',
+            amount: 300,
+            currency: 'NGN',
+          });
+        }
         return send(res, 201, { message: 'Exam started', attempt });
 
       case 'PATCH /api/attempts/a1/answer':
@@ -303,10 +417,25 @@ const server = http.createServer((req, res) => {
           totalQuestions: 1,
           totalAttempts: 1,
           completedAttempts: 1,
+          payments: {
+            total: 0,
+            entryCount: 0,
+            reviewCount: 0,
+            totalRevenue: 0,
+            entryRevenue: 0,
+            reviewRevenue: 0,
+            currency: 'NGN',
+          },
         });
 
       case 'GET /api/admin/users':
         return send(res, 200, { users: [teacher, student], total: 2, pages: 1 });
+
+      case 'GET /api/admin/payments':
+        return send(res, 200, {
+          payments: [],
+          totals: { totalRevenue: 0, entryCount: 0, reviewCount: 0 },
+        });
 
       case 'GET /__calls':
         return send(res, 200, calls);

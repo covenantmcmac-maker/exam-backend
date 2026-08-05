@@ -8,22 +8,34 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Badge, Button, Card, Field, Loading, StatTile } from '../../components/ui';
 import { adminApi } from '../../api/endpoints';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
+import type { NavigationProp } from '@react-navigation/native';
+import type { RootStackParamList } from '../../navigation/types';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
-import type { AdminStats, Exam, ExamAttempt, Role, User } from '../../api/types';
+import type {
+  AdminPaymentsResult,
+  AdminStats,
+  Exam,
+  ExamAttempt,
+  Payment,
+  Role,
+  User,
+} from '../../api/types';
 
-type Tab = 'overview' | 'users' | 'exams' | 'attempts';
+type Tab = 'overview' | 'users' | 'exams' | 'attempts' | 'payments';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'users', label: 'Users' },
   { key: 'exams', label: 'Exams' },
   { key: 'attempts', label: 'Attempts' },
+  { key: 'payments', label: 'Payments' },
 ];
 
 const makeRoleTint = (colors: Colors): Record<string, { fg: string; bg: string }> => ({
@@ -38,27 +50,37 @@ export default function AdminPanelScreen() {
   const roleTint = useMemo(() => makeRoleTint(colors), [colors]);
   const { user: me } = useAuth();
   const dialog = useDialog();
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('overview');
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [paymentTotals, setPaymentTotals] = useState({
+    totalRevenue: 0,
+    entryCount: 0,
+    reviewCount: 0,
+  });
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [s, u, e, a] = await Promise.all([
+      const [s, u, e, a, p] = await Promise.all([
         adminApi.stats(),
         adminApi.users(),
         adminApi.exams(),
         adminApi.attempts(),
+        adminApi.payments(),
       ]);
       setStats(s);
       setUsers(u.users);
       setExams(e);
       setAttempts(a);
+      setPayments(p.payments);
+      setPaymentTotals(p.totals);
     } catch (err) {
       void dialog.notify('Error', err instanceof Error ? err.message : 'Could not load admin data.');
     } finally {
@@ -201,6 +223,29 @@ export default function AdminPanelScreen() {
                 tint={colors.success}
               />
             </View>
+
+            <Text style={styles.sectionLabel}>Revenue</Text>
+            <View style={styles.statRow}>
+              <StatTile
+                label={`Total (${stats?.payments?.currency || 'NGN'})`}
+                value={(stats?.payments?.totalRevenue ?? 0).toLocaleString()}
+                tint={colors.success}
+              />
+              <StatTile
+                label="Entry fees"
+                value={stats?.payments?.entryCount ?? 0}
+                tint={colors.primary}
+              />
+              <StatTile
+                label="Review fees"
+                value={stats?.payments?.reviewCount ?? 0}
+                tint={colors.warning}
+              />
+            </View>
+            <Text style={styles.sectionNote}>
+              Every paid paper earns twice: entry (take) + review (answers). Totals shown in
+              whole currency units.
+            </Text>
           </>
         )}
 
@@ -246,34 +291,66 @@ export default function AdminPanelScreen() {
           </>
         )}
 
-        {tab === 'exams' &&
-          exams.map((e) => {
-            const creator = typeof e.creator === 'object' ? e.creator : null;
-            return (
-              <Card key={e._id}>
-                <View style={styles.rowTop}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.name}>{e.title}</Text>
-                    <Text style={styles.sub}>
-                      by {creator?.name || 'Unknown'} · {e.questions?.length ?? 0} questions
-                    </Text>
+        {tab === 'exams' && (
+          <>
+            <View style={styles.rowTop}>
+              <Text style={styles.sectionLabel}>All exams</Text>
+              <Button
+                title="+ New past paper"
+                variant="secondary"
+                size="sm"
+                onPress={() =>
+                  navigation.navigate('ExamBuilder', { source: 'past' })
+                }
+              />
+            </View>
+            {exams.map((e) => {
+              const creator = typeof e.creator === 'object' ? e.creator : null;
+              const isPast = e.source === 'past';
+              const entry = e.pricing?.entryFee || 0;
+              const review = e.pricing?.reviewFee || 0;
+              return (
+                <Card key={e._id}>
+                  <View style={styles.rowTop}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.name}>
+                        {e.title}
+                        {!!e.year && ` (${e.year})`}
+                      </Text>
+                      <Text style={styles.sub}>
+                        by {creator?.name || 'Unknown'} · {e.questions?.length ?? 0} questions
+                        {isPast
+                          ? ` · entry ${entry}, review ${review}`
+                          : review > 0
+                            ? ` · review ${review}`
+                            : ''}
+                      </Text>
+                    </View>
+                    <View style={{ gap: spacing.xs, alignItems: 'flex-end' }}>
+                      <Badge
+                        text={isPast ? 'PAST' : 'TEACHER'}
+                        color={isPast ? colors.warning : colors.primary}
+                        bg={isPast ? colors.warningLight : colors.primaryLight}
+                      />
+                      <Badge
+                        text={e.settings?.isPublished ? 'LIVE' : 'DRAFT'}
+                        color={e.settings?.isPublished ? colors.success : colors.warning}
+                        bg={e.settings?.isPublished ? colors.successLight : colors.warningLight}
+                      />
+                    </View>
                   </View>
-                  <Badge
-                    text={e.settings?.isPublished ? 'LIVE' : 'DRAFT'}
-                    color={e.settings?.isPublished ? colors.success : colors.warning}
-                    bg={e.settings?.isPublished ? colors.successLight : colors.warningLight}
+                  <Button
+                    title="Delete exam"
+                    variant="danger"
+                    size="sm"
+                    style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
+                    onPress={() => deleteExam(e)}
                   />
-                </View>
-                <Button
-                  title="Delete exam"
-                  variant="danger"
-                  size="sm"
-                  style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
-                  onPress={() => deleteExam(e)}
-                />
-              </Card>
-            );
-          })}
+                </Card>
+              );
+            })}
+          </>
+        )}
 
         {tab === 'attempts' &&
           attempts.map((a) => {
@@ -298,6 +375,63 @@ export default function AdminPanelScreen() {
               </Card>
             );
           })}
+
+        {tab === 'payments' && (
+          <>
+            <View style={styles.statRow}>
+              <StatTile
+                label="Revenue"
+                value={paymentTotals.totalRevenue.toLocaleString()}
+                tint={colors.success}
+              />
+              <StatTile
+                label="Entry pays"
+                value={paymentTotals.entryCount}
+                tint={colors.primary}
+              />
+              <StatTile
+                label="Review pays"
+                value={paymentTotals.reviewCount}
+                tint={colors.warning}
+              />
+            </View>
+
+            {payments.length === 0 && (
+              <Text style={styles.emptyNote}>
+                No payments yet. They appear here the moment a student pays an entry or review
+                fee.
+              </Text>
+            )}
+
+            {payments.map((p) => {
+              const student = typeof p.student === 'object' ? p.student : null;
+              const exam = typeof p.exam === 'object' ? p.exam : null;
+              const isEntry = p.purpose === 'entry';
+              const paid = p.status === 'paid';
+              return (
+                <Card key={p._id}>
+                  <View style={styles.rowTop}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.name}>
+                        {student?.name || 'Student'} · {p.amount} {p.currency}
+                      </Text>
+                      <Text style={styles.sub}>
+                        {exam?.title || 'Exam'} · {isEntry ? 'Entry fee' : 'Review fee'} ·{' '}
+                        {new Date(p.createdAt || '').toLocaleDateString()}
+                      </Text>
+                      <Text style={styles.sub}>Ref {p.reference}</Text>
+                    </View>
+                    <Badge
+                      text={paid ? 'PAID' : p.status.toUpperCase()}
+                      color={paid ? colors.success : p.status === 'pending' ? colors.warning : colors.danger}
+                      bg={paid ? colors.successLight : p.status === 'pending' ? colors.warningLight : colors.dangerLight}
+                    />
+                  </View>
+                </Card>
+              );
+            })}
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -329,4 +463,19 @@ const makeStyles = (colors: Colors) =>
   sub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   score: { fontSize: 16, fontWeight: '800', color: colors.primary },
   actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
+  sectionLabel: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: colors.text,
+    marginBottom: spacing.md,
+    marginTop: spacing.sm,
+  },
+  sectionNote: { fontSize: 12, color: colors.textLight, marginTop: spacing.sm },
+  emptyNote: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: spacing.xl,
+    lineHeight: 21,
+  },
 });

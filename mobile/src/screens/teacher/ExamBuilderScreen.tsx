@@ -9,7 +9,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field, Loading } from '../../components/ui';
-import { examsApi, questionsApi } from '../../api/endpoints';
+import { configApi, examsApi, questionsApi } from '../../api/endpoints';
+import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
 import { difficultyColor, radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
@@ -25,6 +26,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const examId = route.params?.examId;
   const isEdit = !!examId;
+  const { isAdmin } = useAuth();
   const dialog = useDialog();
 
   const [title, setTitle] = useState('');
@@ -35,9 +37,18 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [maxAttempts, setMaxAttempts] = useState('1');
   const [shuffle, setShuffle] = useState(false);
   const [showResults, setShowResults] = useState(true);
-  const [allowReview, setAllowReview] = useState(false);
+  // Answer review is enabled by default; the toggle turns it off (or on).
+  const [allowReview, setAllowReview] = useState(true);
   const [publish, setPublish] = useState(false);
   const [safeMode, setSafeMode] = useState(false);
+
+  // Monetisation. Teacher exams: free to take, teacher-set review fee.
+  // Past papers (admin only): platform entry fee + review fee.
+  const [pastMode, setPastMode] = useState(route.params?.source === 'past');
+  const [year, setYear] = useState('');
+  const [entryFee, setEntryFee] = useState('');
+  const [reviewFee, setReviewFee] = useState('');
+  const [currencySymbol, setCurrencySymbol] = useState('₦');
 
   const [bank, setBank] = useState<Question[]>([]);
   const [selected, setSelected] = useState<Record<string, number>>({});
@@ -60,6 +71,9 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         const qs = await questionsApi.list();
         if (!cancelled) setBank(qs.questions);
 
+        const cfg = await configApi.get();
+        if (!cancelled) setCurrencySymbol(cfg.currencySymbol || '₦');
+
         if (examId) {
           const exam = await examsApi.forEdit(examId);
           if (cancelled) return;
@@ -71,9 +85,14 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           setMaxAttempts(String(exam.settings?.maxAttempts ?? 1));
           setShuffle(!!exam.settings?.shuffleQuestions);
           setShowResults(exam.settings?.showResults !== false);
-          setAllowReview(!!exam.settings?.allowReview);
+          setAllowReview(exam.settings?.allowReview !== false);
           setPublish(!!exam.settings?.isPublished);
           setSafeMode(!!exam.settings?.safeMode);
+
+          if (exam.source === 'past') setPastMode(true);
+          if (exam.year) setYear(String(exam.year));
+          if (exam.pricing?.entryFee) setEntryFee(String(exam.pricing.entryFee));
+          setReviewFee(String(exam.pricing?.reviewFee ?? ''));
 
           const picked: Record<string, number> = {};
           (exam.questions || []).forEach((q) => {
@@ -81,6 +100,14 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             if (id) picked[id] = q.points || 1;
           });
           setSelected(picked);
+        } else {
+          // Prefill the platform's default fees so the price is always
+          // visible: past papers → ₦300 entry + ₦500 review; teacher exams
+          // → ₦500 review (can be set to 0 for free review).
+          setReviewFee(String(cfg.defaultReviewFee ?? 500));
+          if (route.params?.source === 'past') {
+            setEntryFee(String(cfg.defaultEntryFee ?? 300));
+          }
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load data.');
@@ -220,7 +247,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
       return;
     }
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       title: title.trim(),
       description: description.trim(),
       subject: subject.trim(),
@@ -240,6 +267,24 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         safeMode,
       },
     };
+
+    if (pastMode) {
+      if (!isAdmin) {
+        setError('Only admins can create past-question papers.');
+        return;
+      }
+      payload.source = 'past';
+      if (year.trim()) payload.year = parseInt(year, 10) || undefined;
+      payload.pricing = {
+        entryFee: parseInt(entryFee, 10) || 0,
+        reviewFee: parseInt(reviewFee, 10) || 0,
+      };
+    } else {
+      payload.pricing = {
+        // Teacher exams are always free to take; only the review is charged.
+        reviewFee: parseInt(reviewFee, 10) || 0,
+      };
+    }
 
     setSaving(true);
     setError(null);
@@ -332,9 +377,79 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             onChange={setAllowReview}
           />
           <Text style={styles.settingHint}>
-            Reviews show students the correct answer and any explanation you entered after they finish.
+            Reviews show students the correct answer and any explanation you entered after they
+            finish. A paid review fee can be set below.
           </Text>
           <Toggle label="Publish immediately" value={publish} onChange={setPublish} />
+        </Card>
+
+        {isAdmin && !isEdit && (
+          <Card>
+            <Text style={styles.section}>Exam type</Text>
+            <View style={styles.typeRow}>
+              <Pressable
+                onPress={() => setPastMode(false)}
+                style={[styles.typeOption, !pastMode && styles.typeOptionActive]}
+              >
+                <Text style={[styles.typeText, !pastMode && styles.typeTextActive]}>
+                  📝 Teacher exam
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setPastMode(true)}
+                style={[styles.typeOption, pastMode && styles.typeOptionActive]}
+              >
+                <Text style={[styles.typeText, pastMode && styles.typeTextActive]}>
+                  📚 Past questions
+                </Text>
+              </Pressable>
+            </View>
+            <Text style={styles.settingHint}>
+              {pastMode
+                ? 'Platform-owned paper sold to students (entry + review fees).'
+                : 'Teacher-set exam shared by access code — always free to take.'}
+            </Text>
+          </Card>
+        )}
+
+        <Card>
+          <Text style={styles.section}>
+            {pastMode ? 'Pricing (past paper)' : 'Review fee'}
+          </Text>
+
+          {pastMode && (
+            <View style={styles.settingsRow}>
+              <Field
+                label="Year"
+                value={year}
+                onChangeText={setYear}
+                keyboardType="number-pad"
+                placeholder="2022"
+                style={{ textAlign: 'center' }}
+              />
+              <Field
+                label={`Entry fee (${currencySymbol})`}
+                value={entryFee}
+                onChangeText={setEntryFee}
+                keyboardType="number-pad"
+                placeholder="300"
+                style={{ textAlign: 'center' }}
+              />
+            </View>
+          )}
+
+          <Field
+            label={`Answer review fee (${currencySymbol})`}
+            value={reviewFee}
+            onChangeText={setReviewFee}
+            keyboardType="number-pad"
+            placeholder="500"
+            hint={
+              pastMode
+                ? 'Students pay this once, after submitting, to open the answer review.'
+                : 'Students take this exam for free, but pay this fee to open the answer review after submitting. Set 0 for free review.'
+            }
+          />
         </Card>
 
         <Card>
@@ -551,6 +666,19 @@ const makeStyles = (colors: Colors) =>
   toggleLabel: { fontSize: 15, color: colors.text, flex: 1 },
   settingHelp: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginTop: -spacing.xs, marginBottom: spacing.sm },
   settingHint: { fontSize: 12, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.sm },
+  typeRow: { flexDirection: 'row', gap: spacing.md },
+  typeOption: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    backgroundColor: colors.bg,
+  },
+  typeOptionActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  typeText: { fontSize: 14, fontWeight: '700', color: colors.textMuted },
+  typeTextActive: { color: colors.primary },
   pickHeader: {
     flexDirection: 'row',
     alignItems: 'center',

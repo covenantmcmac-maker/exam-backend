@@ -3,6 +3,7 @@ const ExamAttempt = require('../models/ExamAttempt');
 const Exam = require('../models/Exam');
 const Question = require('../models/Question');
 const { auth, authorize } = require('../middleware/auth');
+const { requireEntryPayment, requireReviewAccess } = require('../services/payment-access');
 
 const MAX_SECURITY_WARNINGS = 3;
 const MAX_SAFE_MODE_VIOLATIONS = 3;
@@ -133,6 +134,9 @@ router.post('/start', auth, async (req, res) => {
     if (!exam) {
       return res.status(404).json({ message: 'Exam not found' });
     }
+
+    // Paid past-question papers: no payment → no start.
+    if (!(await requireEntryPayment(req, res, exam))) return;
 
     const existingAttempt = await ExamAttempt.findOne({
       exam: examId,
@@ -351,26 +355,39 @@ router.get('/my-attempts', auth, async (req, res) => {
   }
 });
 
-// REVIEW A COMPLETED ATTEMPT (Student)
+// REVIEW A COMPLETED ATTEMPT
+// Students see their script plus the correct answers and explanations.
+// Locked behind the exam's review fee (teacher exams: teacher-set fee;
+// past papers: platform fee). Exam owners (teacher/admin) get in for free.
 router.get('/:attemptId/review', auth, async (req, res) => {
   try {
-    const attempt = await ExamAttempt.findOne({
-      _id: req.params.attemptId,
-      student: req.user._id,
-      status: { $ne: 'in-progress' }
-    }).populate({
+    const attempt = await ExamAttempt.findById(req.params.attemptId).populate({
       path: 'exam',
       populate: { path: 'questions.question' }
     });
 
-    if (!attempt) {
+    if (!attempt || attempt.status === 'in-progress') {
       return res.status(404).json({ message: 'Completed attempt not found' });
     }
 
     const exam = attempt.exam;
-    if (!exam?.settings?.allowReview) {
+
+    const isOwner =
+      req.user.role === 'admin' ||
+      (req.user.role === 'teacher' && getQuestionId(exam.creator) === getQuestionId(req.user));
+    const isStudent = attempt.student.toString() === req.user._id.toString();
+
+    if (!isOwner && !isStudent) {
+      return res.status(403).json({ message: 'Not allowed to view this attempt' });
+    }
+
+    // Exam owners may always review; students need the teacher's permission.
+    if (isStudent && !isOwner && !exam?.settings?.allowReview) {
       return res.status(403).json({ message: 'Review is not enabled for this exam' });
     }
+
+    // Students pay the review fee; owners don't.
+    if (isStudent && !(await requireReviewAccess(req, res, exam, attempt))) return;
 
     const answersByQuestion = new Map(
       (attempt.answers || []).map(answer => [getQuestionId(answer.question), answer])

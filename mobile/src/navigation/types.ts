@@ -8,6 +8,7 @@ export type AuthStackParamList = {
 
 export type StudentTabParamList = {
   Home: undefined;
+  PastQuestions: undefined;
   Results: undefined;
   Profile: undefined;
 };
@@ -36,7 +37,7 @@ export type RootStackParamList = {
     examTitle?: string;
   };
   ExamReview: { attemptId: string };
-  ExamBuilder: { examId?: string } | undefined;
+  ExamBuilder: { examId?: string; source?: 'teacher' | 'past' } | undefined;
   ExamStats: { examId: string; title?: string };
   QuestionEditor: { questionId?: string } | undefined;
   BulkImport: undefined;
