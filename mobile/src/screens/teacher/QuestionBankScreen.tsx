@@ -112,6 +112,25 @@ export default function QuestionBankScreen({ navigation }: Props) {
 
   const pickedIds = Object.keys(picked);
 
+  /** True when every currently visible question is picked. */
+  const allVisiblePicked = visible.length > 0 && visible.every((q) => !!picked[q._id]);
+
+  /** Select or clear all currently visible questions in one tap. */
+  const toggleSelectAll = () => {
+    const ids = visible.map((q) => q._id);
+    setPicked((prev) => {
+      const next = { ...prev };
+      if (allVisiblePicked) {
+        ids.forEach((id) => delete next[id]);
+      } else {
+        ids.forEach((id) => {
+          next[id] = true;
+        });
+      }
+      return next;
+    });
+  };
+
   const togglePick = (id: string) => {
     setPicked((prev) => {
       const next = { ...prev };
@@ -263,6 +282,12 @@ export default function QuestionBankScreen({ navigation }: Props) {
         <Text style={styles.title}>{isPastView ? 'Past Questions' : 'Questions'}</Text>
         {selectMode ? (
           <View style={styles.headerActions}>
+            <Button
+              title={allVisiblePicked ? 'Clear' : 'Select all'}
+              variant="ghost"
+              size="sm"
+              onPress={toggleSelectAll}
+            />
             <Button title="Cancel" variant="ghost" size="sm" onPress={exitSelect} />
             {isPastView ? (
               <>
@@ -442,6 +467,7 @@ export default function QuestionBankScreen({ navigation }: Props) {
       <FlatList
         data={visible}
         keyExtractor={(q) => q._id}
+        style={styles.listFill}
         contentContainerStyle={visible.length === 0 ? styles.emptyWrap : styles.list}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListEmptyComponent={
@@ -672,6 +698,7 @@ const makeStyles = (colors: Colors) =>
     chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
     chipText: { fontSize: 13, color: colors.textMuted, textTransform: 'capitalize', fontWeight: '600' },
     chipTextActive: { color: colors.white },
+    listFill: { flex: 1 },
     list: { padding: spacing.lg, paddingTop: 0, paddingBottom: spacing.xxl },
     emptyWrap: { flexGrow: 1 },
     cardPicked: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
