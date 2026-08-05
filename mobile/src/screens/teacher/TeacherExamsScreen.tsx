@@ -1,11 +1,14 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
+  Alert,
   FlatList,
+  Modal,
   Pressable,
   RefreshControl,
   Share,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -27,6 +30,14 @@ type Props = CompositeScreenProps<
   NativeStackScreenProps<RootStackParamList>
 >;
 
+interface SellState {
+  examId: string;
+  title: string;
+  entryFee: string;
+  reviewFee: string;
+  year: string;
+}
+
 export default function TeacherExamsScreen({ navigation }: Props) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -34,6 +45,9 @@ export default function TeacherExamsScreen({ navigation }: Props) {
   const [exams, setExams] = useState<Exam[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  const [sell, setSell] = useState<SellState | null>(null);
+  const [selling, setSelling] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -97,17 +111,70 @@ export default function TeacherExamsScreen({ navigation }: Props) {
     }
   };
 
+  const openSell = (exam: Exam) => {
+    if ((exam.questions?.length ?? 0) === 0) {
+      void dialog.notify(
+        'Add questions first',
+        'Add at least one question to the exam before listing it for sale.'
+      );
+      return;
+    }
+    setSell({
+      examId: exam._id,
+      title: exam.title,
+      entryFee: '300',
+      reviewFee: '0',
+      year: exam.year ? String(exam.year) : new Date().getFullYear().toString(),
+    });
+  };
+
+  const submitSell = async () => {
+    if (!sell) return;
+    const entry = Number(sell.entryFee);
+    if (!sell.entryFee || isNaN(entry) || entry < 0) {
+      Alert.alert('Invalid price', 'Enter a valid price in Naira (≥ 0).');
+      return;
+    }
+    const review = sell.reviewFee === '' ? 0 : Number(sell.reviewFee);
+    if (isNaN(review) || review < 0) {
+      Alert.alert('Invalid review fee', 'Enter a valid review fee in Naira.');
+      return;
+    }
+    setSelling(true);
+    try {
+      await examsApi.sellAsPast(sell.examId, {
+        entryFee: entry,
+        reviewFee: review,
+        year: sell.year ? Number(sell.year) : undefined,
+      });
+      setSell(null);
+      await load();
+      void dialog.notify(
+        'Listed for sale 🎉',
+        'Your exam is now in the Past Questions store. Students can buy it with Paystack and re-practice unlimited times.'
+      );
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Could not list exam.');
+    } finally {
+      setSelling(false);
+    }
+  };
+
   if (loading) return <Loading text="Loading exams…" />;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.title}>My exams</Text>
-        <Button
-          title="+ New"
-          size="sm"
-          onPress={() => navigation.navigate('ExamBuilder')}
-        />
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+          <Button
+            title="🛒 My Past Qs"
+            size="sm"
+            variant="secondary"
+            onPress={() => navigation.navigate('TeacherPastQuestions')}
+          />
+          <Button title="+ New" size="sm" onPress={() => navigation.navigate('ExamBuilder')} />
+        </View>
       </View>
 
       <FlatList
@@ -119,7 +186,7 @@ export default function TeacherExamsScreen({ navigation }: Props) {
           <EmptyState
             icon="📝"
             title="No exams yet"
-            subtitle="Create an exam, add questions, then share the access code with your students."
+            subtitle="Create an exam, add questions, share the access code with students, and when you're done, tap “Sell as Past Q” to list it for sale."
             action={
               <Button title="Create exam" onPress={() => navigation.navigate('ExamBuilder')} />
             }
@@ -189,6 +256,15 @@ export default function TeacherExamsScreen({ navigation }: Props) {
                   onPress={() => navigation.navigate('ExamBuilder', { examId: item._id })}
                 />
                 <Button
+                  title="💰 Sell as Past Q"
+                  variant="secondary"
+                  size="sm"
+                  style={{ flex: 1 }}
+                  onPress={() => openSell(item)}
+                />
+              </View>
+              <View style={styles.actions}>
+                <Button
                   title="Delete"
                   variant="danger"
                   size="sm"
@@ -200,45 +276,146 @@ export default function TeacherExamsScreen({ navigation }: Props) {
           );
         }}
       />
+
+      {/* Price modal */}
+      <Modal
+        visible={!!sell}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setSell(null)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => setSell(null)} />
+        <View style={[styles.sheet, { backgroundColor: colors.card }]}>
+          <Text style={styles.sheetTitle}>Sell as Past Question</Text>
+          <Text style={[styles.sheetSub, { color: colors.textMuted }]}>{sell?.title}</Text>
+
+          <Text style={styles.fieldLabel}>Entry price (₦) — what students pay to practice</Text>
+          <TextInput
+            style={[
+              styles.input,
+              { color: colors.text, borderColor: colors.border, backgroundColor: colors.bg },
+            ]}
+            placeholder="e.g. 300"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="numeric"
+            value={sell?.entryFee || ''}
+            onChangeText={(t) =>
+              setSell((s) => (s ? { ...s, entryFee: t.replace(/[^0-9.]/g, '') } : s))
+            }
+          />
+
+          <Text style={styles.fieldLabel}>
+            Review fee (₦) — 0 = answers included after taking
+          </Text>
+          <TextInput
+            style={[
+              styles.input,
+              { color: colors.text, borderColor: colors.border, backgroundColor: colors.bg },
+            ]}
+            placeholder="0"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="numeric"
+            value={sell?.reviewFee || ''}
+            onChangeText={(t) =>
+              setSell((s) => (s ? { ...s, reviewFee: t.replace(/[^0-9.]/g, '') } : s))
+            }
+          />
+
+          <Text style={styles.fieldLabel}>Year (optional)</Text>
+          <TextInput
+            style={[
+              styles.input,
+              { color: colors.text, borderColor: colors.border, backgroundColor: colors.bg },
+            ]}
+            placeholder="e.g. 2024"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="numeric"
+            value={sell?.year || ''}
+            onChangeText={(t) =>
+              setSell((s) => (s ? { ...s, year: t.replace(/[^0-9]/g, '') } : s))
+            }
+          />
+
+          <Text style={[styles.disclaimer, { color: colors.textMuted }]}>
+            ⚠️ This unpublishes the live exam and rotates the access code so students can't
+            enter for free. Buyers get unlimited practice attempts.
+          </Text>
+
+          <View style={styles.modalActions}>
+            <Button title="Cancel" variant="ghost" style={{ flex: 1 }} onPress={() => setSell(null)} />
+            <Button
+              title={selling ? 'Listing…' : 'List for sale'}
+              style={{ flex: 1 }}
+              onPress={submitSell}
+              loading={selling}
+            />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const makeStyles = (colors: Colors) =>
   StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.md,
-  },
-  title: { fontSize: 26, fontWeight: '800', color: colors.text },
-  list: { padding: spacing.lg, paddingTop: 0, paddingBottom: spacing.xxl },
-  emptyWrap: { flexGrow: 1 },
-  rowTop: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
-  examTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: colors.text },
-  subject: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
-  meta: { fontSize: 13, color: colors.textMuted, marginTop: spacing.sm },
-  pill: { paddingHorizontal: spacing.md, paddingVertical: 3, borderRadius: radius.pill },
-  pillText: { fontSize: 11, fontWeight: '800' },
-  codeBox: {
-    backgroundColor: colors.primaryLight,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    marginTop: spacing.md,
-    alignItems: 'center',
-  },
-  codeLabel: { fontSize: 10, fontWeight: '800', color: colors.primary, letterSpacing: 1 },
-  code: {
-    fontSize: 22,
-    fontWeight: '900',
-    color: colors.primaryDark,
-    letterSpacing: 3,
-    marginTop: 2,
-  },
-  codeHint: { fontSize: 11, color: colors.primary, marginTop: 2 },
-  actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
-});
+    safe: { flex: 1, backgroundColor: colors.bg },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.sm,
+      paddingBottom: spacing.md,
+    },
+    title: { fontSize: 26, fontWeight: '800', color: colors.text },
+    list: { padding: spacing.lg, paddingTop: 0, paddingBottom: spacing.xxl },
+    emptyWrap: { flexGrow: 1 },
+    rowTop: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
+    examTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: colors.text },
+    subject: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+    meta: { fontSize: 13, color: colors.textMuted, marginTop: spacing.sm },
+    pill: { paddingHorizontal: spacing.md, paddingVertical: 3, borderRadius: radius.pill },
+    pillText: { fontSize: 11, fontWeight: '800' },
+    codeBox: {
+      backgroundColor: colors.primaryLight,
+      borderRadius: radius.md,
+      padding: spacing.md,
+      marginTop: spacing.md,
+      alignItems: 'center',
+    },
+    codeLabel: { fontSize: 10, fontWeight: '800', color: colors.primary, letterSpacing: 1 },
+    code: {
+      fontSize: 22,
+      fontWeight: '900',
+      color: colors.primaryDark,
+      letterSpacing: 3,
+      marginTop: 2,
+    },
+    codeHint: { fontSize: 11, color: colors.primary, marginTop: 2 },
+    actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
+    // Modal
+    backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)' },
+    sheet: {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      borderTopLeftRadius: radius.lg,
+      borderTopRightRadius: radius.lg,
+      padding: spacing.xl,
+      paddingBottom: spacing.xxl,
+      gap: spacing.sm,
+    },
+    sheetTitle: { fontSize: 20, fontWeight: '800', color: colors.text },
+    sheetSub: { fontSize: 14, marginBottom: spacing.md },
+    fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginTop: spacing.sm },
+    input: {
+      borderWidth: 1,
+      borderRadius: radius.md,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.md,
+      fontSize: 16,
+    },
+    disclaimer: { fontSize: 12, marginTop: spacing.sm, lineHeight: 18 },
+    modalActions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg },
+  });

@@ -117,6 +117,15 @@ router.post('/guest-register', async (req, res) => {
       });
     }
 
+    // Paid past-question papers cannot be taken by guests — payment requires
+    // a real account. Teacher exams (free entry) remain guest-friendly.
+    const pricing = exam.pricing || {};
+    if ((Number(pricing.entryFee) || 0) > 0) {
+      return res.status(403).json({
+        message: 'This exam requires payment. Please create an account to take it.'
+      });
+    }
+
     let user = await User.findOne({ email });
 
     if (!user) {
@@ -173,6 +182,39 @@ router.post('/guest-register', async (req, res) => {
   } catch (error) {
     console.error('Guest register error:', error);
     res.status(500).json({ message: 'Error joining exam' });
+  }
+});
+
+// CHANGE PASSWORD
+router.patch('/change-password', auth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'Current password and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: 'New password must be at least 6 characters' });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const isMatch = await user.comparePassword(currentPassword);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Current password is incorrect' });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ message: 'Error changing password' });
   }
 });
 

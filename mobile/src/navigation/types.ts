@@ -8,6 +8,7 @@ export type AuthStackParamList = {
 
 export type StudentTabParamList = {
   Home: undefined;
+  PastQuestions: undefined;
   Results: undefined;
   Profile: undefined;
 };
@@ -31,11 +32,18 @@ export type RootStackParamList = {
     passed?: boolean;
     timeSpent?: number;
     showResults: boolean;
+    allowReview?: boolean;
+    attemptId?: string;
     examTitle?: string;
+    isPastQuestion?: boolean;
   };
-  ExamBuilder: { examId?: string } | undefined;
+  ExamReview: { attemptId: string };
+  ExamBuilder: { examId?: string; source?: 'teacher' | 'past' } | undefined;
   ExamStats: { examId: string; title?: string };
   QuestionEditor: { questionId?: string } | undefined;
   BulkImport: undefined;
   AdminPanel: undefined;
+  PastQuestions: undefined;
+  // Teacher: manage their listed past-question papers
+  TeacherPastQuestions: undefined;
 };
