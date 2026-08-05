@@ -7,6 +7,8 @@ const path = require('path');
 // Load environment variables
 dotenv.config();
 
+const backfillSubject = require('./scripts/backfill-subject');
+
 // Create express app
 const app = express();
 
@@ -37,7 +39,17 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ MongoDB Connected Successfully'))
+  .then(async () => {
+    console.log('✅ MongoDB Connected Successfully');
+
+    // Repair legacy questions after the connection is ready. A migration
+    // failure must never prevent the API from starting.
+    try {
+      await backfillSubject({ log: console.log });
+    } catch (err) {
+      console.warn('⚠️ Subject backfill failed; continuing startup:', err);
+    }
+  })
   .catch(err => console.log('❌ MongoDB Connection Error:', err));
 
 // Test route
