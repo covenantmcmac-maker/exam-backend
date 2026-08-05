@@ -39,7 +39,13 @@ const questionSchema = new mongoose.Schema({
     enum: ['easy', 'medium', 'hard'],
     default: 'medium'
   },
-  subject: String,
+  // Default keeps new questions categorised so they're always findable via
+  // the subject filter. Legacy questions missing this field are backfilled by
+  // scripts/backfill-subject.js with the same default.
+  subject: {
+    type: String,
+    default: 'General'
+  },
   category: String,
   tags: [String],
   explanation: String,
