@@ -6,10 +6,13 @@ const USER_KEY = '@exam_user';
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** The parsed error body, when the server sent one (e.g. 402 fee details). */
+  data?: Record<string, unknown>;
+  constructor(message: string, status: number, data?: Record<string, unknown>) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -99,7 +102,7 @@ export async function request<T>(
 
   if (!res.ok) {
     if (res.status === 401 && auth && onUnauthorized) onUnauthorized();
-    throw new ApiError(data?.message || `Request failed (${res.status})`, res.status);
+    throw new ApiError(data?.message || `Request failed (${res.status})`, res.status, data);
   }
 
   return data as T;
