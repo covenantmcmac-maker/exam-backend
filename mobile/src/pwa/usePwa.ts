@@ -131,11 +131,15 @@ export function useServiceWorkerUpdate() {
   const applyUpdate = useCallback(() => {
     const w = getWindow();
     if (!w || !waiting) return;
-    waiting.postMessage('SKIP_WAITING');
-    // Reload once the new worker takes control.
+
+    // Register the reload hook before telling the waiting worker to activate.
+    // Some browsers swap controllers immediately, so adding the listener after
+    // postMessage can miss the event and make the in-app Refresh button appear
+    // to do nothing until the user manually hard-refreshes.
     w.navigator.serviceWorker.addEventListener('controllerchange', () => w.location.reload(), {
       once: true,
     });
+    waiting.postMessage('SKIP_WAITING');
   }, [waiting]);
 
   return { updateReady: !!waiting, applyUpdate };
