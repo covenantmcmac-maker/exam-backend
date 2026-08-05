@@ -82,6 +82,7 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
   // A controlled registration, so "update available" is distinguishable from
   // a first install.
   const swListeners = {};
+  const controllerListeners = {};
   const registration = {
     waiting: null,
     installing: null,
@@ -90,16 +91,20 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
     },
     _emit: (t) => (swListeners[t] || []).forEach((fn) => fn()),
   };
+  const serviceWorkerContainer = {
+    controller: {},
+    ready: Promise.resolve(registration),
+    register: () => Promise.resolve(registration),
+    addEventListener: (t, fn) => {
+      (controllerListeners[t] ||= []).push(fn);
+    },
+    removeEventListener: () => {},
+    _listenerCount: (t) => (controllerListeners[t] || []).length,
+  };
   if (withServiceWorker) {
     Object.defineProperty(window.navigator, 'serviceWorker', {
       configurable: true,
-      value: {
-        controller: {},
-        ready: Promise.resolve(registration),
-        register: () => Promise.resolve(registration),
-        addEventListener: () => {},
-        removeEventListener: () => {},
-      },
+      value: serviceWorkerContainer,
     });
   }
 
@@ -122,6 +127,7 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
     doc,
     errors,
     registration,
+    serviceWorkerContainer,
     text,
     async waitForText(re, timeout = 15000) {
       const end = Date.now() + timeout;
@@ -279,9 +285,16 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
 
       // Simulate a newly installed worker while one is already controlling.
       const listeners = [];
+      let message = null;
+      let listenerWasReadyWhenMessaged = false;
       app.registration.installing = {
         state: 'installed',
         addEventListener: (t, fn) => listeners.push(fn),
+        postMessage: (value) => {
+          message = value;
+          listenerWasReadyWhenMessaged =
+            app.serviceWorkerContainer._listenerCount('controllerchange') > 0;
+        },
       };
       app.registration._emit('updatefound');
       await sleep(300);
@@ -290,6 +303,10 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
       const notice = await app.waitForText(/new version is available/i, 8000);
       check('update banner appears', notice, app.text().slice(0, 90));
       check('offers a Refresh action', /Refresh/.test(app.text()));
+      app.click('Refresh');
+      await sleep(100);
+      check('Refresh tells the waiting worker to activate', message === 'SKIP_WAITING', String(message));
+      check('reload listener is attached before activation starts', listenerWasReadyWhenMessaged);
       check('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
       app.close();
     }

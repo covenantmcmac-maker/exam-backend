@@ -131,11 +131,38 @@ export function useServiceWorkerUpdate() {
   const applyUpdate = useCallback(() => {
     const w = getWindow();
     if (!w || !waiting) return;
-    waiting.postMessage('SKIP_WAITING');
-    // Reload once the new worker takes control.
-    w.navigator.serviceWorker.addEventListener('controllerchange', () => w.location.reload(), {
-      once: true,
-    });
+
+    let reloading = false;
+    const reload = () => {
+      if (reloading) return;
+      reloading = true;
+      w.location.reload();
+    };
+
+    // Register this before messaging the worker. A waiting worker can activate
+    // immediately, and some browsers fire controllerchange synchronously enough
+    // for a listener added after postMessage() to miss it completely.
+    w.navigator.serviceWorker.addEventListener('controllerchange', reload, { once: true });
+
+    // Older builds called skipWaiting during install, so their update banner can
+    // briefly retain a worker that has already activated. In that case there is
+    // no future controllerchange event to wait for: refresh the page directly.
+    if (waiting.state === 'activated' || waiting.state === 'redundant') {
+      reload();
+      return;
+    }
+
+    // Safari has occasionally failed to deliver controllerchange to an open
+    // standalone PWA. Arm a fallback before messaging so even a postMessage
+    // lifecycle race cannot leave the button inert. A normal navigation is
+    // network-first and gets the new shell.
+    w.setTimeout(reload, 2000);
+    try {
+      waiting.postMessage('SKIP_WAITING');
+    } catch {
+      // The worker changed state between the check above and postMessage.
+      reload();
+    }
   }, [waiting]);
 
   return { updateReady: !!waiting, applyUpdate };
