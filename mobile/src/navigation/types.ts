@@ -8,6 +8,7 @@ export type AuthStackParamList = {
 
 export type StudentTabParamList = {
   Home: undefined;
+  PastQuestions: undefined;
   Results: undefined;
   Profile: undefined;
 };
@@ -32,8 +33,12 @@ export type RootStackParamList = {
     timeSpent?: number;
     showResults: boolean;
     examTitle?: string;
+    attemptId?: string;
+    reviewEnabled?: boolean;
   };
-  ExamBuilder: { examId?: string } | undefined;
+  /** Paid answer review of a completed attempt. */
+  AnswerReview: { attemptId: string };
+  ExamBuilder: { examId?: string; source?: 'teacher' | 'past' } | undefined;
   ExamStats: { examId: string; title?: string };
   QuestionEditor: { questionId?: string } | undefined;
   BulkImport: undefined;

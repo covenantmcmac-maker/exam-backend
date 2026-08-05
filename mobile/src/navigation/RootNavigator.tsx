@@ -9,6 +9,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 import { useAuth } from '../context/AuthContext';
 import { useColors } from '../context/ThemeContext';
+import { useDialog } from '../components/Dialog';
 import type { Colors } from '../theme';
 import { Loading } from '../components/ui';
 
@@ -17,6 +18,7 @@ import RegisterScreen from '../screens/auth/RegisterScreen';
 import GuestJoinScreen from '../screens/auth/GuestJoinScreen';
 
 import StudentHomeScreen from '../screens/student/StudentHomeScreen';
+import PastQuestionsScreen from '../screens/student/PastQuestionsScreen';
 import ResultsScreen from '../screens/student/ResultsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 
@@ -29,8 +31,10 @@ import QuestionEditorScreen from '../screens/teacher/QuestionEditorScreen';
 
 import ExamTakingScreen from '../screens/exam/ExamTakingScreen';
 import ExamResultScreen from '../screens/exam/ExamResultScreen';
+import AnswerReviewScreen from '../screens/exam/AnswerReviewScreen';
 import BulkImportScreen from '../screens/teacher/BulkImportScreen';
 import AdminPanelScreen from '../screens/admin/AdminPanelScreen';
+import { paymentsApi } from '../api/endpoints';
 
 import type {
   AuthStackParamList,
@@ -81,6 +85,11 @@ function StudentFlow() {
         options={{ tabBarIcon: icon('🏠') }}
       />
       <StudentTabs.Screen
+        name="PastQuestions"
+        component={PastQuestionsScreen}
+        options={{ tabBarIcon: icon('📚') }}
+      />
+      <StudentTabs.Screen
         name="Results"
         component={ResultsScreen}
         options={{ tabBarIcon: icon('📊') }}
@@ -123,6 +132,48 @@ function TeacherFlow() {
   );
 }
 
+/**
+ * On web, Paystack redirects the browser back to the app after payment with
+ * ?reference=… in the URL. Verify it once so the user sees confirmation
+ * without having to tap anything.
+ */
+function PaymentRedirectHandler() {
+  const dialog = useDialog();
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.location?.search) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const reference = params.get('reference') || params.get('trxref');
+    if (!reference) return;
+
+    // Clean the URL so a refresh does not re-verify.
+    const clean = window.location.pathname + window.location.hash;
+    window.history.replaceState({}, '', clean);
+
+    (async () => {
+      try {
+        const { paid } = await paymentsApi.verify(reference);
+        if (paid) {
+          await dialog.notify(
+            'Payment successful 🎉',
+            'Your payment was confirmed. You can now continue with the exam.'
+          );
+        } else {
+          await dialog.notify(
+            'Payment not confirmed yet',
+            'We are still waiting for your payment to be confirmed. Check your results or try again in a moment.'
+          );
+        }
+      } catch {
+        /* Non-fatal: the verify button in the pay flow covers this case. */
+      }
+    })();
+  }, [dialog]);
+
+  return null;
+}
+
 export default function RootNavigator() {
   const { user, loading, isTeacher, pendingExamId, clearPendingExam } = useAuth();
   const colors = useColors();
@@ -152,6 +203,7 @@ export default function RootNavigator() {
         goToPendingExam();
       }}
     >
+      <PaymentRedirectHandler />
       <RootStack.Navigator
         screenOptions={{
           headerStyle: { backgroundColor: colors.card },
@@ -187,6 +239,11 @@ export default function RootNavigator() {
               name="ExamResult"
               component={ExamResultScreen}
               options={{ headerShown: false, gestureEnabled: false }}
+            />
+            <RootStack.Screen
+              name="AnswerReview"
+              component={AnswerReviewScreen}
+              options={{ title: 'Answer review' }}
             />
             <RootStack.Screen name="ExamBuilder" component={ExamBuilderScreen} />
             <RootStack.Screen name="ExamStats" component={ExamStatsScreen} />

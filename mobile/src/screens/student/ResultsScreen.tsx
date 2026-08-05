@@ -1,13 +1,15 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
-import { Card, EmptyState, Loading } from '../../components/ui';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { Button, Card, EmptyState, Loading } from '../../components/ui';
 import { attemptsApi } from '../../api/endpoints';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
 import type { ExamAttempt } from '../../api/types';
+import type { NavigationProp } from '@react-navigation/native';
+import type { RootStackParamList } from '../../navigation/types';
 
 function formatDuration(seconds?: number) {
   if (!seconds && seconds !== 0) return '—';
@@ -30,6 +32,7 @@ function formatDate(iso?: string) {
 export default function ResultsScreen() {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -135,6 +138,16 @@ export default function ResultsScreen() {
                 {passed ? '✓ Passed' : '✗ Did not pass'}
                 {item.status === 'graded' ? ' · Graded' : ''}
               </Text>
+
+              {exam?.settings?.allowReview && (
+                <Button
+                  title="Review answers"
+                  variant="ghost"
+                  size="sm"
+                  style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
+                  onPress={() => navigation.navigate('AnswerReview', { attemptId: item._id })}
+                />
+              )}
             </Card>
           );
         }}

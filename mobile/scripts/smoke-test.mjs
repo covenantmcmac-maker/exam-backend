@@ -155,7 +155,8 @@ try {
   const clientMod = path.join(jsRoot, 'src/api/client.js');
   const endpointsMod = path.join(jsRoot, 'src/api/endpoints.js');
   const { getToken, clearSession, ApiError } = await import(clientMod);
-  const { authApi, examsApi, attemptsApi, questionsApi, adminApi } = await import(endpointsMod);
+  const { authApi, examsApi, attemptsApi, questionsApi, adminApi, paymentsApi, configApi } =
+    await import(endpointsMod);
 
   console.log('\nAuth');
   const login = await authApi.login('teacher@example.com', 'secret');
@@ -217,6 +218,56 @@ try {
   const mine = await attemptsApi.myAttempts();
   check('my-attempts returns history', Array.isArray(mine) && mine.length === 1);
 
+  console.log('\\nPayments (past questions)');
+  const cfg = await configApi.get();
+  check(
+    'config exposes naira + dev mode',
+    cfg.currency === 'NGN' && cfg.paymentsDevMode === true
+  );
+  check(
+    'config exposes default fees (300 entry / 500 review)',
+    cfg.defaultEntryFee === 300 && cfg.defaultReviewFee === 500
+  );
+
+  const past = await examsApi.past();
+  check(
+    'past library lists paid paper',
+    past.exams.length === 1 && past.exams[0].pricing.entryFee === 500
+  );
+  check('past paper locked until paid', past.exams[0].purchasedEntry === false);
+
+  let locked = false;
+  try {
+    await attemptsApi.start('e2');
+  } catch (e) {
+    locked = e instanceof ApiError && e.status === 402;
+  }
+  check('start of unpaid past paper returns 402', locked);
+
+  const init = await paymentsApi.initiate('e2', 'entry');
+  check(
+    'initiate payment returns sandbox payment',
+    init.devMode === true && init.payment.reference === 'PST-MOCK-1'
+  );
+
+  const done = await paymentsApi.devComplete('PST-MOCK-1');
+  check('dev-complete marks payment paid', done.payment.status === 'paid');
+
+  const verified = await paymentsApi.verify('PST-MOCK-1');
+  check('verify confirms the payment', verified.paid === true);
+
+  const startedPaid = await attemptsApi.start('e2');
+  check('paid paper can now be started', !!startedPaid.attempt);
+
+  const review = await attemptsApi.review('a1');
+  check(
+    'answer review returns questions with correct answers',
+    review.items.length === 1 && review.items[0].options[1].isCorrect === true
+  );
+
+  const myPayments = await paymentsApi.myPayments();
+  check('my-payments returns history list', Array.isArray(myPayments));
+
   console.log('\nTeacher flow');
   const myExams = await examsApi.myExams();
   check('my-exams returns list', myExams.length === 1);
@@ -246,6 +297,13 @@ try {
   console.log('\nAdmin');
   const adminStats = await adminApi.stats();
   check('admin stats shape matches backend', adminStats.totalUsers === 3);
+  check('admin stats include revenue', typeof adminStats.payments?.totalRevenue === 'number');
+
+  const adminPayments = await adminApi.payments();
+  check(
+    'admin payments returns list + totals',
+    Array.isArray(adminPayments.payments) && typeof adminPayments.totals?.totalRevenue === 'number'
+  );
 
   const adminUsers = await adminApi.users();
   check('admin users returns list', adminUsers.users.length === 2);

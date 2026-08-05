@@ -1,15 +1,29 @@
 import { request, uploadFile } from './client';
 import type { UploadableFile } from './client';
 import type {
+  AdminPaymentsResult,
   AdminStats,
+  AnswerReview,
+  AppConfig,
   Exam,
   ExamAttempt,
   ExamStats,
+  InitiatePaymentResult,
+  PastExam,
+  Payment,
+  PaymentPurpose,
   Question,
   Role,
   SubmitResult,
   User,
+  VerifyPaymentResult,
 } from './types';
+
+/* ----------------------------------------------------------------- config */
+
+export const configApi = {
+  get: () => request<AppConfig>('/api/config', { auth: false }),
+};
 
 /* ------------------------------------------------------------------ auth */
 
@@ -74,6 +88,16 @@ export const examsApi = {
     ),
 
   take: (id: string) => request<Exam>(`/api/exams/${id}/take`),
+
+  /** Paid past-question library, organised by subject and year. */
+  past: (params: { subject?: string; year?: number; search?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, String(v));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ exams: PastExam[] }>(`/api/exams/past${suffix}`);
+  },
 
   forEdit: (id: string) => request<Exam>(`/api/exams/${id}/edit`),
 
@@ -147,6 +171,10 @@ export const attemptsApi = {
   submit: (attemptId: string) =>
     request<SubmitResult>(`/api/attempts/${attemptId}/submit`, { method: 'POST' }),
 
+  /** Full answer review — paid for students when the exam carries a review fee. */
+  review: (attemptId: string) =>
+    request<AnswerReview>(`/api/attempts/${attemptId}/review`),
+
   myAttempts: () => request<ExamAttempt[]>('/api/attempts/my-attempts'),
 
   grade: (attemptId: string, grades: { questionId: string; pointsEarned: number }[]) =>
@@ -157,6 +185,29 @@ export const attemptsApi = {
 
   remove: (attemptId: string) =>
     request<{ message: string }>(`/api/attempts/${attemptId}`, { method: 'DELETE' }),
+};
+
+/* --------------------------------------------------------------- payments */
+
+export const paymentsApi = {
+  initiate: (examId: string, purpose: PaymentPurpose, attemptId?: string) =>
+    request<InitiatePaymentResult>('/api/payments/initiate', {
+      method: 'POST',
+      body: { examId, purpose, attemptId },
+    }),
+
+  /** Confirm payment after returning from the Paystack checkout. */
+  verify: (reference: string) =>
+    request<VerifyPaymentResult>(`/api/payments/${reference}/verify`),
+
+  /** Sandbox-only: marks a pending payment paid when no gateway is configured. */
+  devComplete: (reference: string) =>
+    request<{ message: string; payment: Payment }>(
+      `/api/payments/${reference}/dev-complete`,
+      { method: 'POST' }
+    ),
+
+  myPayments: () => request<Payment[]>('/api/payments/my-payments'),
 };
 
 /* ----------------------------------------------------------------- admin */
@@ -184,10 +235,17 @@ export const adminApi = {
   removeUser: (id: string) =>
     request<{ message: string }>(`/api/admin/users/${id}`, { method: 'DELETE' }),
 
-  exams: () => request<Exam[]>('/api/admin/exams'),
+  exams: (params: { source?: 'teacher' | 'past' } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.source) qs.append('source', params.source);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<Exam[]>(`/api/admin/exams${suffix}`);
+  },
 
   removeExam: (id: string) =>
     request<{ message: string }>(`/api/admin/exams/${id}`, { method: 'DELETE' }),
+
+  payments: () => request<AdminPaymentsResult>('/api/admin/payments'),
 
   attempts: () => request<ExamAttempt[]>('/api/admin/attempts'),
 

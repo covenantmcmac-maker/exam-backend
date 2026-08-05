@@ -3,6 +3,7 @@ const ExamAttempt = require('../models/ExamAttempt');
 const Exam = require('../models/Exam');
 const Question = require('../models/Question');
 const { auth, authorize } = require('../middleware/auth');
+const { requireEntryPayment, requireReviewAccess } = require('../services/payment-access');
 
 // START ATTEMPT
 router.post('/start', auth, async (req, res) => {
@@ -13,6 +14,9 @@ router.post('/start', auth, async (req, res) => {
     if (!exam) {
       return res.status(404).json({ message: 'Exam not found' });
     }
+
+    // Paid past-question papers: no payment → no start.
+    if (!(await requireEntryPayment(req, res, exam))) return;
 
     const existingAttempt = await ExamAttempt.findOne({
       exam: examId,
@@ -136,6 +140,8 @@ router.post('/:attemptId/submit', auth, async (req, res) => {
     if (exam.settings.showResults) {
       res.json({
         message: 'Exam submitted successfully',
+        attemptId: attempt._id,
+        reviewEnabled: Boolean(exam.settings.allowReview),
         showResults: true,
         score: attempt.score,
         totalPoints: attempt.totalPoints,
@@ -146,6 +152,8 @@ router.post('/:attemptId/submit', auth, async (req, res) => {
     } else {
       res.json({
         message: 'Exam submitted successfully',
+        attemptId: attempt._id,
+        reviewEnabled: Boolean(exam.settings.allowReview),
         showResults: false,
         timeSpent: attempt.timeSpent
       });
@@ -153,6 +161,106 @@ router.post('/:attemptId/submit', auth, async (req, res) => {
   } catch (error) {
     console.error('Submit error:', error);
     res.status(500).json({ message: 'Error submitting exam' });
+  }
+});
+
+// GET ANSWER REVIEW
+// Students see their script plus the correct answers and explanations.
+// Locked behind the exam's review fee (teacher exams: teacher-set fee;
+// past papers: platform fee). Exam owners get in for free.
+router.get('/:attemptId/review', auth, async (req, res) => {
+  try {
+    const attempt = await ExamAttempt.findOne({
+      _id: req.params.attemptId,
+      status: { $ne: 'in-progress' }
+    }).populate('exam');
+
+    if (!attempt) {
+      return res.status(404).json({ message: 'Attempt not found' });
+    }
+
+    const exam = attempt.exam;
+
+    // Ownership check
+    const isOwner =
+      req.user.role === 'admin' ||
+      (req.user.role === 'teacher' &&
+        String(exam.creator?._id || exam.creator) === String(req.user._id));
+    const isStudent = attempt.student.toString() === req.user._id.toString();
+
+    if (!isOwner && !isStudent) {
+      return res.status(403).json({ message: 'Not allowed to view this attempt' });
+    }
+
+    // Exam owners may always review; students need the teacher's permission.
+    if (isStudent && !isOwner && !exam.settings.allowReview) {
+      return res.status(403).json({ message: 'Answer review is not enabled for this exam' });
+    }
+
+    // Students pay the review fee; owners don't.
+    if (isStudent && !(await requireReviewAccess(req, res, exam, attempt))) return;
+
+    const questions = await Question.find({
+      _id: { $in: attempt.answers.map((a) => a.question).filter(Boolean) }
+    });
+
+    const qMap = new Map(questions.map((q) => [q._id.toString(), q]));
+
+    const items = attempt.answers
+      .filter((a) => a.question && qMap.has(a.question.toString()))
+      .map((answer) => {
+        const q = qMap.get(answer.question.toString());
+        const examQ = (exam.questions || []).find(
+          (eq) => eq.question?.toString?.() === q._id.toString()
+        );
+        const maxPoints = examQ?.points || q.points || 1;
+        const correctIndex =
+          q.questionType === 'multiple-choice' || q.questionType === 'true-false'
+            ? q.options.findIndex((o) => o.isCorrect)
+            : -1;
+
+        return {
+          questionId: q._id,
+          questionText: q.questionText,
+          questionType: q.questionType,
+          options: q.options.map((o, i) => ({
+            text: o.text,
+            isCorrect: o.isCorrect,
+            isSelected: answer.selectedOption === i
+          })),
+          correctAnswer: q.correctAnswer || null,
+          correctOptionIndex: correctIndex,
+          selectedOption: answer.selectedOption ?? null,
+          textAnswer: answer.textAnswer || '',
+          isCorrect: answer.isCorrect,
+          pointsEarned: answer.pointsEarned || 0,
+          maxPoints,
+          explanation: q.explanation || null
+        };
+      });
+
+    res.json({
+      exam: {
+        _id: exam._id,
+        title: exam.title,
+        subject: exam.subject,
+        source: exam.source,
+        year: exam.year
+      },
+      attempt: {
+        _id: attempt._id,
+        score: attempt.score,
+        totalPoints: attempt.totalPoints,
+        percentage: attempt.percentage,
+        status: attempt.status,
+        completedAt: attempt.completedAt,
+        timeSpent: attempt.timeSpent
+      },
+      items
+    });
+  } catch (error) {
+    console.error('Review error:', error);
+    res.status(500).json({ message: 'Error fetching review' });
   }
 });
 

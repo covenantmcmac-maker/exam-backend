@@ -21,8 +21,17 @@ function fmtTime(seconds?: number) {
 export default function ExamResultScreen({ route, navigation }: Props) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const { showResults, score, totalPoints, percentage, passed, timeSpent, examTitle } =
-    route.params;
+  const {
+    showResults,
+    score,
+    totalPoints,
+    percentage,
+    passed,
+    timeSpent,
+    examTitle,
+    attemptId,
+    reviewEnabled,
+  } = route.params;
   const { isTeacher } = useAuth();
 
   const pct = percentage ? Math.round(parseFloat(percentage)) : 0;
@@ -88,6 +97,15 @@ export default function ExamResultScreen({ route, navigation }: Props) {
               <Row label="Time taken" value={fmtTime(timeSpent)} />
             </Card>
           </>
+        )}
+
+        {!!attemptId && reviewEnabled && (
+          <Button
+            title="Review answers"
+            variant="secondary"
+            style={{ marginTop: spacing.md }}
+            onPress={() => navigation.navigate('AnswerReview', { attemptId })}
+          />
         )}
 
         <Button title="Back to home" onPress={goHome} style={{ marginTop: spacing.lg }} />

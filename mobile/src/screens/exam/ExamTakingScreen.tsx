@@ -9,13 +9,15 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, Loading } from '../../components/ui';
+import { Button, Card, ErrorNote, Loading } from '../../components/ui';
 import { useDialog } from '../../components/Dialog';
-import { attemptsApi, examsApi } from '../../api/endpoints';
+import { attemptsApi, configApi, examsApi } from '../../api/endpoints';
+import { ApiError } from '../../api/client';
+import { formatFee, initiatePayment, openCheckout, verifyPayment } from '../../utils/payments';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
-import type { Exam, Question } from '../../api/types';
+import type { AppConfig, Exam, Question } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
 
@@ -52,64 +54,97 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Set when the exam carries an entry fee that has not been paid yet.
+  const [paywall, setPaywall] = useState<{ amount: number } | null>(null);
+  const [payBusy, setPayBusy] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [pendingRef, setPendingRef] = useState<string | null>(null);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 
   const submittedRef = useRef(false);
   const attemptIdRef = useRef<string | null>(null);
   const deadlineRef = useRef<number | null>(null);
 
   /* ------------------------------------------------------------- bootstrap */
-  useEffect(() => {
-    let cancelled = false;
+  const bootstrap = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    setPaywall(null);
+    setPayError(null);
+    try {
+      const examData = await examsApi.take(examId);
+      const startRes = await attemptsApi.start(examId);
 
-    (async () => {
-      try {
-        const examData = await examsApi.take(examId);
-        const startRes = await attemptsApi.start(examId);
-        if (cancelled) return;
+      const attempt = startRes.attempt;
+      attemptIdRef.current = attempt._id;
+      setAttemptId(attempt._id);
+      setExam(examData);
+      setAppConfig(await configApi.get());
 
-        const attempt = startRes.attempt;
-        attemptIdRef.current = attempt._id;
-        setAttemptId(attempt._id);
-        setExam(examData);
+      const nextSlots: Slot[] = (examData.questions || [])
+        .filter((q) => q.question && typeof q.question === 'object')
+        .map((q) => ({ question: q.question as Question, points: q.points || 1 }));
+      setSlots(nextSlots);
 
-        const nextSlots: Slot[] = (examData.questions || [])
-          .filter((q) => q.question && typeof q.question === 'object')
-          .map((q) => ({ question: q.question as Question, points: q.points || 1 }));
-        setSlots(nextSlots);
+      // Restore any answers already saved on a resumed attempt.
+      const restored: Record<string, { option?: number; text?: string }> = {};
+      (attempt.answers || []).forEach((a) => {
+        const qid = typeof a.question === 'string' ? a.question : String(a.question);
+        if (a.selectedOption !== undefined && a.selectedOption !== null) {
+          restored[qid] = { ...restored[qid], option: a.selectedOption };
+        }
+        if (a.textAnswer) {
+          restored[qid] = { ...restored[qid], text: a.textAnswer };
+        }
+      });
+      setAnswers(restored);
 
-        // Restore any answers already saved on a resumed attempt.
-        const restored: Record<string, { option?: number; text?: string }> = {};
-        (attempt.answers || []).forEach((a) => {
-          const qid = typeof a.question === 'string' ? a.question : String(a.question);
-          if (a.selectedOption !== undefined && a.selectedOption !== null) {
-            restored[qid] = { ...restored[qid], option: a.selectedOption };
-          }
-          if (a.textAnswer) {
-            restored[qid] = { ...restored[qid], text: a.textAnswer };
-          }
-        });
-        setAnswers(restored);
-
-        // Timer continues from when the attempt actually started.
-        const durationSec = (examData.settings?.duration || 60) * 60;
-        const startedAt = new Date(attempt.startedAt).getTime();
-        const elapsed = Number.isNaN(startedAt)
-          ? 0
-          : Math.floor((Date.now() - startedAt) / 1000);
-        const left = Math.max(0, durationSec - Math.max(0, elapsed));
-        deadlineRef.current = Date.now() + left * 1000;
-        setRemaining(left);
-      } catch (e) {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Could not load exam.');
-      } finally {
-        if (!cancelled) setLoading(false);
+      // Timer continues from when the attempt actually started.
+      const durationSec = (examData.settings?.duration || 60) * 60;
+      const startedAt = new Date(attempt.startedAt).getTime();
+      const elapsed = Number.isNaN(startedAt)
+        ? 0
+        : Math.floor((Date.now() - startedAt) / 1000);
+      const left = Math.max(0, durationSec - Math.max(0, elapsed));
+      deadlineRef.current = Date.now() + left * 1000;
+      setRemaining(left);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 402) {
+        // Paid paper, entry fee not paid yet.
+        const amount = Number((e.data as { amount?: unknown })?.amount);
+        setPaywall({ amount: Number.isFinite(amount) ? amount : 0 });
+      } else {
+        setLoadError(e instanceof Error ? e.message : 'Could not load exam.');
       }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    } finally {
+      setLoading(false);
+    }
   }, [examId]);
+
+  useEffect(() => {
+    void bootstrap();
+  }, [bootstrap]);
+
+  /* ------------------------------------------------------- pay to unlock */
+  const payToUnlock = async () => {
+    if (!paywall) return;
+    setPayBusy(true);
+    setPayError(null);
+    try {
+      const outcome = await initiatePayment(examId, 'entry');
+      if (outcome.paid) {
+        await dialog.notify('Payment successful 🎉', 'Entry unlocked — starting the exam.');
+        void bootstrap();
+        return;
+      }
+      setPendingRef(outcome.reference);
+      await openCheckout(outcome.authorizationUrl);
+    } catch (e) {
+      setPayError(e instanceof Error ? e.message : 'Payment could not be started.');
+    } finally {
+      setPayBusy(false);
+    }
+  };
 
   /* ----------------------------------------------------------------- submit */
   const doSubmit = useCallback(
@@ -129,6 +164,8 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
           passed: res.passed,
           timeSpent: res.timeSpent,
           examTitle: exam?.title,
+          attemptId: res.attemptId,
+          reviewEnabled: res.reviewEnabled,
         });
       } catch (e) {
         submittedRef.current = false;
@@ -238,6 +275,64 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   );
 
   if (loading) return <Loading text="Preparing your exam…" />;
+
+  // Paid paper, entry fee not paid — the exam stays locked.
+  if (paywall) {
+    const symbol = appConfig?.currencySymbol || '₦';
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.center}>
+          <Text style={styles.errorIcon}>🔒</Text>
+          <Text style={styles.errorTitle}>This exam requires payment</Text>
+          <Text style={styles.paywallText}>
+            Pay {formatFee(paywall.amount, symbol)} to unlock and take this paper. The Start
+            button stays locked until your entry fee is paid.
+          </Text>
+
+          {!!payError && <ErrorNote message={payError} />}
+
+          {pendingRef ? (
+            <>
+              <Text style={styles.paywallText}>
+                Payment pending… complete it in the Paystack window, then confirm here.
+              </Text>
+              <Button
+                title="I've paid — confirm"
+                style={{ marginTop: spacing.md, alignSelf: 'stretch' }}
+                onPress={async () => {
+                  const paid = await verifyPayment(pendingRef);
+                  if (paid) {
+                    setPendingRef(null);
+                    await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
+                    void bootstrap();
+                  } else {
+                    await dialog.notify(
+                      'Not confirmed yet',
+                      "We couldn't find the payment yet. Check the Paystack page, then try again."
+                    );
+                  }
+                }}
+              />
+            </>
+          ) : (
+            <Button
+              title={`Pay ${formatFee(paywall.amount, symbol)} & unlock`}
+              style={{ marginTop: spacing.md, alignSelf: 'stretch' }}
+              loading={payBusy}
+              onPress={() => void payToUnlock()}
+            />
+          )}
+
+          <Button
+            title="Go back"
+            variant="ghost"
+            style={{ marginTop: spacing.md }}
+            onPress={() => navigation.goBack()}
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (loadError || slots.length === 0) {
     return (
@@ -425,6 +520,13 @@ const makeStyles = (colors: Colors) =>
     fontWeight: '700',
     color: colors.text,
     textAlign: 'center',
+    marginTop: spacing.md,
+  },
+  paywallText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 21,
     marginTop: spacing.md,
   },
 
