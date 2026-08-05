@@ -96,16 +96,44 @@ export const examsApi = {
 /* ------------------------------------------------------------- questions */
 
 export const questionsApi = {
-  list: (params: { subject?: string; difficulty?: string; type?: string } = {}) => {
+  list: (params: { subject?: string; difficulty?: string; type?: string; past?: boolean; isPastQuestion?: boolean; search?: string; year?: string; session?: string } = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
-      if (v) qs.append(k, v);
+      if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
     });
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<{ questions: Question[]; total: number; pages: number }>(
       `/api/questions${suffix}`
     );
   },
+
+  listPast: (params: { subject?: string; difficulty?: string; type?: string; search?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, v);
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; total: number; pages: number }>(
+      `/api/questions/past${suffix}`
+    );
+  },
+
+  listPastQuestionsPool: (params: { subject?: string; difficulty?: string; type?: string; search?: string; year?: string; session?: string; examType?: string } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) qs.append(k, v);
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ questions: Question[]; total: number; pages: number }>(
+      `/api/questions/past-questions${suffix}`
+    );
+  },
+
+  pastStats: () =>
+    request<import('./types').PastQuestionsStats>('/api/questions/past-questions/stats'),
+
+  getOne: (id: string) =>
+    request<Question>(`/api/questions/${id}`),
 
   create: (payload: Partial<Question>) =>
     request<Question>('/api/questions', { method: 'POST', body: payload }),
@@ -124,6 +152,30 @@ export const questionsApi = {
 
   bulkUpload: (file: UploadableFile) =>
     uploadFile<{ message: string; count: number }>('/api/questions/bulk-upload', file),
+
+  // Past Questions actions
+  moveToPast: (id: string, meta?: { pastQuestionYear?: number; pastQuestionSession?: string; pastQuestionExamType?: string }) =>
+    request<{ message: string; question: Question }>(`/api/questions/${id}/move-to-past`, {
+      method: 'PATCH',
+      body: meta || {},
+    }),
+
+  restore: (id: string) =>
+    request<{ message: string; question: Question }>(`/api/questions/${id}/restore`, {
+      method: 'PATCH',
+    }),
+
+  bulkMoveToPast: (questionIds: string[], meta?: { pastQuestionYear?: number; pastQuestionSession?: string; pastQuestionExamType?: string }) =>
+    request<{ message: string; modifiedCount: number; questions: Question[] }>('/api/questions/bulk-move-to-past', {
+      method: 'POST',
+      body: { questionIds, ...meta },
+    }),
+
+  bulkRestore: (questionIds: string[]) =>
+    request<{ message: string; modifiedCount: number }>('/api/questions/bulk-restore', {
+      method: 'POST',
+      body: { questionIds },
+    }),
 };
 
 /* -------------------------------------------------------------- attempts */

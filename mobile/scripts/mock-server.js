@@ -38,6 +38,27 @@ const question = {
   points: 2,
   difficulty: 'easy',
   subject: 'Maths',
+  isPastQuestion: false,
+  movedToPastAt: null,
+};
+
+const pastQuestion = {
+  _id: 'pq1',
+  questionText: 'What is the capital of France? (Past 2022)',
+  questionType: 'multiple-choice',
+  options: [
+    { _id: 'o1', text: 'London', isCorrect: false },
+    { _id: 'o2', text: 'Paris', isCorrect: true },
+    { _id: 'o3', text: 'Berlin', isCorrect: false },
+  ],
+  points: 2,
+  difficulty: 'medium',
+  subject: 'Geography',
+  isPastQuestion: true,
+  movedToPastAt: new Date().toISOString(),
+  pastQuestionYear: 2022,
+  pastQuestionSession: 'June',
+  pastQuestionExamType: 'Final',
 };
 
 const exam = {
@@ -107,6 +128,9 @@ const server = http.createServer((req, res) => {
       'GET /api/attempts/my-attempts',
       'POST /api/attempts/start',
       'GET /api/questions',
+      'GET /api/questions/past',
+      'GET /api/questions/past-questions',
+      'GET /api/questions/past-questions/stats',
       'GET /api/admin/stats',
     ];
     if (needsAuth.includes(key) && !authed) {
@@ -219,6 +243,23 @@ const server = http.createServer((req, res) => {
       case 'GET /api/questions':
         return send(res, 200, { questions: [question], total: 1, pages: 1 });
 
+      case 'GET /api/questions/past':
+        return send(res, 200, { questions: [pastQuestion], total: 1, pages: 1 });
+
+      case 'GET /api/questions/past-questions':
+        return send(res, 200, { questions: [pastQuestion], total: 1, pages: 1 });
+
+      case 'GET /api/questions/past-questions/stats':
+        return send(res, 200, {
+          overview: { total: 1, subjects: ['Geography'], years: [2022], subjectCount: 1 },
+          bySubject: [{ _id: 'Geography', count: 1 }],
+          byYear: [{ _id: 2022, count: 1 }],
+        });
+
+      case 'GET /api/questions/q1':
+      case 'GET /api/questions/pq1':
+        return send(res, 200, body && body._id === 'pq1' ? pastQuestion : question);
+
       case 'POST /api/questions':
         return send(res, 201, { ...question, _id: 'q2' });
 
@@ -233,6 +274,31 @@ const server = http.createServer((req, res) => {
         return send(res, 200, {
           message: 'Successfully deleted questions',
           deletedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0,
+        });
+
+      case 'POST /api/questions/bulk-move-to-past':
+        return send(res, 200, {
+          message: `Successfully moved ${Array.isArray(body.questionIds) ? body.questionIds.length : 0} questions to past questions`,
+          modifiedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0,
+          questions: [pastQuestion],
+        });
+
+      case 'POST /api/questions/bulk-restore':
+        return send(res, 200, {
+          message: `Successfully restored ${Array.isArray(body.questionIds) ? body.questionIds.length : 0} questions from past questions`,
+          modifiedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0,
+        });
+
+      case 'PATCH /api/questions/q1/move-to-past':
+        return send(res, 200, {
+          message: 'Question moved to past questions successfully',
+          question: { ...question, isPastQuestion: true, movedToPastAt: new Date().toISOString() },
+        });
+
+      case 'PATCH /api/questions/pq1/restore':
+        return send(res, 200, {
+          message: 'Question restored from past questions successfully',
+          question: { ...pastQuestion, isPastQuestion: false, movedToPastAt: null },
         });
 
       case 'GET /api/admin/stats':

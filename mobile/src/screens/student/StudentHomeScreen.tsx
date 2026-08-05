@@ -113,6 +113,14 @@ export default function StudentHomeScreen({ navigation }: Props) {
           <Button title="Join exam" onPress={joinExam} loading={busy} />
         </Card>
 
+        <Card style={{ marginTop: spacing.lg }}>
+          <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>📚 Past Questions</Text>
+          <Text style={{ fontSize: 13, color: colors.textMuted, marginTop: 4, marginBottom: spacing.md, lineHeight: 18 }}>
+            Practice with questions from previous exams. Teachers archive old questions here for revision.
+          </Text>
+          <Button title="Browse Past Questions" variant="secondary" onPress={() => navigation.navigate('PastQuestions' as any)} />
+        </Card>
+
         <Text style={styles.sectionTitle}>Your progress</Text>
         <View style={styles.statRow}>
           <StatTile label="Exams taken" value={completed} />

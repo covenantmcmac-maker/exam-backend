@@ -19,6 +19,7 @@ import GuestJoinScreen from '../screens/auth/GuestJoinScreen';
 import StudentHomeScreen from '../screens/student/StudentHomeScreen';
 import ResultsScreen from '../screens/student/ResultsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+import PastQuestionsScreen from '../screens/PastQuestionsScreen';
 
 import TeacherDashboardScreen from '../screens/teacher/TeacherDashboardScreen';
 import TeacherExamsScreen from '../screens/teacher/TeacherExamsScreen';
@@ -79,6 +80,11 @@ function StudentFlow() {
         name="Home"
         component={StudentHomeScreen}
         options={{ tabBarIcon: icon('🏠') }}
+      />
+      <StudentTabs.Screen
+        name="PastQuestions"
+        component={PastQuestionsScreen}
+        options={{ title: 'Past Qs', tabBarIcon: icon('📚'), tabBarLabel: 'Past Qs' }}
       />
       <StudentTabs.Screen
         name="Results"
@@ -200,6 +206,11 @@ export default function RootNavigator() {
               name="AdminPanel"
               component={AdminPanelScreen}
               options={{ title: 'Admin panel' }}
+            />
+            <RootStack.Screen
+              name="PastQuestions"
+              component={PastQuestionsScreen}
+              options={{ title: 'Past Questions' }}
             />
           </>
         )}

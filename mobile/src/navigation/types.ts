@@ -9,6 +9,7 @@ export type AuthStackParamList = {
 export type StudentTabParamList = {
   Home: undefined;
   Results: undefined;
+  PastQuestions: undefined;
   Profile: undefined;
 };
 
@@ -38,4 +39,6 @@ export type RootStackParamList = {
   QuestionEditor: { questionId?: string } | undefined;
   BulkImport: undefined;
   AdminPanel: undefined;
+  PastQuestions: undefined;
+  PastQuestionDetail: { questionId: string } | undefined;
 };
