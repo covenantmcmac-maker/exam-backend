@@ -232,7 +232,7 @@ try {
   const past = await examsApi.past();
   check(
     'past library lists paid paper',
-    past.exams.length === 1 && past.exams[0].pricing.entryFee === 500
+    past.exams.length === 1 && past.exams[0].pricing.entryFee === 300 && past.exams[0].pricing.reviewFee === 500
   );
   check('past paper locked until paid', past.exams[0].purchasedEntry === false);
 
@@ -262,7 +262,10 @@ try {
   const review = await attemptsApi.review('a1');
   check(
     'answer review returns questions with correct answers',
-    review.items.length === 1 && review.items[0].options[1].isCorrect === true
+    review.questions.length === 1 &&
+      review.questions[0].correctOptionIndex === 1 &&
+      review.questions[0].correctAnswer === '4' &&
+      review.questions[0].isCorrect === true
   );
 
   const myPayments = await paymentsApi.myPayments();

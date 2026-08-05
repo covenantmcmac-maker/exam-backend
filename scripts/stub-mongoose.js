@@ -283,7 +283,8 @@ function makeModel(name, schemaDef) {
 
   const populateDoc = (doc, spec) => {
     if (!spec) return doc;
-    const { path, select } = typeof spec === 'string' ? { path: spec, select: undefined } : spec;
+    const { path, select, populate: nested } =
+      typeof spec === 'string' ? { path: spec } : spec;
 
     if (path.includes('.')) {
       // Nested array path like questions.question
@@ -294,7 +295,10 @@ function makeModel(name, schemaDef) {
         arr.forEach((entry) => {
           if (entry && entry[field]) {
             const found = Target && coll(Target.modelName).find((d) => looseEq(d._id, entry[field]));
-            if (found) entry[field] = applySelect(found, select);
+            if (found) {
+              entry[field] = applySelect(found, select);
+              if (nested) entry[field] = populateDoc(entry[field], nested);
+            }
           }
         });
       }
@@ -307,7 +311,10 @@ function makeModel(name, schemaDef) {
     const targetName = REF_TARGETS[path];
     const Target = targetName ? models[targetName] : undefined;
     const found = Target ? coll(Target.modelName).find((d) => looseEq(d._id, id)) : undefined;
-    if (found) doc[path] = applySelect(found, select);
+    if (found) {
+      doc[path] = applySelect(found, select);
+      if (nested) doc[path] = populateDoc(doc[path], nested);
+    }
     return doc;
   };
 

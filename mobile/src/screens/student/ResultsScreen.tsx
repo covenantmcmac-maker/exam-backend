@@ -2,13 +2,13 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { NavigationProp } from '@react-navigation/native';
 import { Button, Card, EmptyState, Loading } from '../../components/ui';
 import { attemptsApi } from '../../api/endpoints';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
 import type { ExamAttempt } from '../../api/types';
-import type { NavigationProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../../navigation/types';
 
 function formatDuration(seconds?: number) {
@@ -27,6 +27,11 @@ function formatDate(iso?: string) {
     month: 'short',
     year: 'numeric',
   });
+}
+
+function canSeeScore(item: ExamAttempt) {
+  const exam = typeof item.exam === 'object' ? item.exam : null;
+  return exam?.settings?.showResults !== false && item.percentage !== undefined && item.score !== undefined;
 }
 
 export default function ResultsScreen() {
@@ -79,14 +84,16 @@ export default function ResultsScreen() {
           <EmptyState
             icon="📊"
             title={error ? 'Something went wrong' : 'No results yet'}
-            subtitle={error || 'Once you complete an exam, your score appears here.'}
+            subtitle={error || 'Once you complete an exam, your history appears here.'}
           />
         }
         renderItem={({ item }) => {
           const exam = typeof item.exam === 'object' ? item.exam : null;
+          const scoreVisible = canSeeScore(item);
           const pct = Math.round(item.percentage || 0);
           const passMark = exam?.settings?.passingMarks ?? 50;
           const passed = pct >= passMark;
+          const canReview = item.canReview || exam?.settings?.allowReview;
 
           return (
             <Card>
@@ -95,57 +102,77 @@ export default function ResultsScreen() {
                   <Text style={styles.examTitle}>{exam?.title || 'Exam'}</Text>
                   {!!exam?.subject && <Text style={styles.subject}>{exam.subject}</Text>}
                 </View>
-                <View
-                  style={[
-                    styles.pctPill,
-                    { backgroundColor: passed ? colors.successLight : colors.dangerLight },
-                  ]}
-                >
-                  <Text
-                    style={[styles.pctText, { color: passed ? colors.success : colors.danger }]}
+                {scoreVisible ? (
+                  <View
+                    style={[
+                      styles.pctPill,
+                      { backgroundColor: passed ? colors.successLight : colors.dangerLight },
+                    ]}
                   >
-                    {pct}%
+                    <Text
+                      style={[styles.pctText, { color: passed ? colors.success : colors.danger }]}
+                    >
+                      {pct}%
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={[styles.pctPill, { backgroundColor: colors.primaryLight }]}>
+                    <Text style={[styles.pctText, { color: colors.primary }]}>Hidden</Text>
+                  </View>
+                )}
+              </View>
+
+              {scoreVisible ? (
+                <>
+                  <View style={styles.bar}>
+                    <View
+                      style={[
+                        styles.barFill,
+                        {
+                          width: `${Math.min(100, Math.max(0, pct))}%`,
+                          backgroundColor: passed ? colors.success : colors.danger,
+                        },
+                      ]}
+                    />
+                  </View>
+
+                  <View style={styles.metaRow}>
+                    <Text style={styles.meta}>
+                      {item.score ?? 0}/{item.totalPoints ?? 0} points
+                    </Text>
+                    <Text style={styles.meta}>⏱ {formatDuration(item.timeSpent)}</Text>
+                    <Text style={styles.meta}>{formatDate(item.completedAt)}</Text>
+                  </View>
+
+                  <Text
+                    style={[
+                      styles.verdict,
+                      { color: passed ? colors.success : colors.danger },
+                    ]}
+                  >
+                    {passed ? '✓ Passed' : '✗ Did not pass'}
+                    {item.status === 'graded' ? ' · Graded' : ''}
                   </Text>
-                </View>
-              </View>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.hiddenNote}>
+                    Your teacher has chosen not to show scores for this exam.
+                  </Text>
+                  <View style={styles.metaRow}>
+                    <Text style={styles.meta}>⏱ {formatDuration(item.timeSpent)}</Text>
+                    <Text style={styles.meta}>{formatDate(item.completedAt)}</Text>
+                  </View>
+                </>
+              )}
 
-              <View style={styles.bar}>
-                <View
-                  style={[
-                    styles.barFill,
-                    {
-                      width: `${Math.min(100, Math.max(0, pct))}%`,
-                      backgroundColor: passed ? colors.success : colors.danger,
-                    },
-                  ]}
-                />
-              </View>
-
-              <View style={styles.metaRow}>
-                <Text style={styles.meta}>
-                  {item.score}/{item.totalPoints} points
-                </Text>
-                <Text style={styles.meta}>⏱ {formatDuration(item.timeSpent)}</Text>
-                <Text style={styles.meta}>{formatDate(item.completedAt)}</Text>
-              </View>
-
-              <Text
-                style={[
-                  styles.verdict,
-                  { color: passed ? colors.success : colors.danger },
-                ]}
-              >
-                {passed ? '✓ Passed' : '✗ Did not pass'}
-                {item.status === 'graded' ? ' · Graded' : ''}
-              </Text>
-
-              {exam?.settings?.allowReview && (
+              {canReview && (
                 <Button
                   title="Review answers"
-                  variant="ghost"
+                  variant="secondary"
                   size="sm"
-                  style={{ marginTop: spacing.md, alignSelf: 'flex-start' }}
-                  onPress={() => navigation.navigate('AnswerReview', { attemptId: item._id })}
+                  style={{ marginTop: spacing.md }}
+                  onPress={() => navigation.navigate('ExamReview', { attemptId: item._id })}
                 />
               )}
             </Card>
@@ -190,4 +217,5 @@ const makeStyles = (colors: Colors) =>
   },
   meta: { fontSize: 13, color: colors.textMuted },
   verdict: { fontSize: 13, fontWeight: '700', marginTop: spacing.sm },
+  hiddenNote: { fontSize: 14, color: colors.textMuted, lineHeight: 21, marginTop: spacing.md },
 });

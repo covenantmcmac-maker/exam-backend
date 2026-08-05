@@ -191,7 +191,7 @@ async function main() {
     await req('PATCH', `/api/attempts/${attemptId}/answer`, { token: studentTok, body: { questionId: q2.body._id, textAnswer: 'Abuja' } });
 
     const submit = await req('POST', `/api/attempts/${attemptId}/submit`, { token: studentTok });
-    check('submit returns score + attemptId + reviewEnabled', submit.status === 200 && submit.body.attemptId === attemptId && submit.body.reviewEnabled === true && submit.body.percentage === '100.00', `status=${submit.status} body=${JSON.stringify(submit.body)}`);
+    check('submit returns score + attemptId + allowReview', submit.status === 200 && submit.body.attemptId === attemptId && submit.body.allowReview === true && submit.body.percentage === '100.00', `status=${submit.status} body=${JSON.stringify(submit.body)}`);
 
     console.log('\nReview gate (second charge)');
     const reviewLocked = await req('GET', `/api/attempts/${attemptId}/review`, { token: studentTok });
@@ -202,10 +202,10 @@ async function main() {
     await req('POST', `/api/payments/${reviewInit.body.payment.reference}/dev-complete`, { token: studentTok });
 
     const review = await req('GET', `/api/attempts/${attemptId}/review`, { token: studentTok });
-    check('review unlocked after fee', review.status === 200 && review.body.items.length === 2, `status=${review.status} body=${JSON.stringify(review.body).slice(0, 200)}`);
-    const first = review.body.items.find((i) => i.questionId === q1.body._id);
+    check('review unlocked after fee', review.status === 200 && review.body.questions.length === 2, `status=${review.status} body=${JSON.stringify(review.body).slice(0, 200)}`);
+    const first = review.body.questions.find((i) => i.questionId === q1.body._id);
     check('review shows correct answer + explanation + selection',
-      first.options[1].isCorrect === true && first.options[1].isSelected === true && first.isCorrect === true && first.explanation === 'Basic addition',
+      first.correctOptionIndex === 1 && first.correctAnswer === '4' && first.selectedOption === 1 && first.isCorrect === true && first.explanation === 'Basic addition',
       JSON.stringify(first));
 
     // Teacher can review their own exam's attempts for free.

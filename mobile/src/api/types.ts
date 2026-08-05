@@ -74,46 +74,6 @@ export interface PastExam {
   endsAt?: string | null;
 }
 
-/** One question in the answer review (with correct answers + explanations). */
-export interface ReviewItem {
-  questionId: string;
-  questionText: string;
-  questionType: QuestionType;
-  options: {
-    text: string;
-    isCorrect: boolean;
-    isSelected: boolean;
-  }[];
-  correctAnswer: string | null;
-  correctOptionIndex: number;
-  selectedOption: number | null;
-  textAnswer: string;
-  isCorrect?: boolean;
-  pointsEarned: number;
-  maxPoints: number;
-  explanation: string | null;
-}
-
-export interface AnswerReview {
-  exam: {
-    _id: string;
-    title: string;
-    subject?: string;
-    source: ExamSource;
-    year?: number;
-  };
-  attempt: {
-    _id: string;
-    score: number;
-    totalPoints: number;
-    percentage: number;
-    status: string;
-    completedAt?: string;
-    timeSpent?: number;
-  };
-  items: ReviewItem[];
-}
-
 export interface AdminPaymentsResult {
   payments: Payment[];
   totals: {
@@ -170,6 +130,7 @@ export interface ExamSettings {
   showResults: boolean;
   allowReview: boolean;
   maxAttempts: number;
+  safeMode: boolean;
   startDate?: string | null;
   endDate?: string | null;
   isPublished: boolean;
@@ -205,30 +166,77 @@ export interface AttemptAnswer {
   pointsEarned?: number;
 }
 
+export interface SecurityViolations {
+  count: number;
+  autoSubmitted?: boolean;
+  events?: { reason?: string; occurredAt?: string }[];
+}
+
 export interface ExamAttempt {
   _id: string;
   exam: Exam | string;
   student: User | string;
-  answers: AttemptAnswer[];
-  score: number;
-  totalPoints: number;
-  percentage: number;
+  answers?: AttemptAnswer[];
+  score?: number;
+  totalPoints?: number;
+  percentage?: number;
   status: 'in-progress' | 'completed' | 'timed-out' | 'graded';
   startedAt: string;
   completedAt?: string;
   timeSpent?: number;
+  securityViolations?: SecurityViolations;
+  canReview?: boolean;
+  resultsHidden?: boolean;
 }
 
 export interface SubmitResult {
   message: string;
-  attemptId?: string;
-  reviewEnabled?: boolean;
   showResults: boolean;
+  allowReview?: boolean;
+  attemptId?: string;
   score?: number;
   totalPoints?: number;
   percentage?: string;
   timeSpent?: number;
   passed?: boolean;
+}
+
+export interface SecurityFlagResult {
+  message: string;
+  warningCount: number;
+  warningsRemaining: number;
+  autoSubmitted: boolean;
+  result?: SubmitResult;
+}
+
+export interface ReviewQuestion {
+  order: number;
+  questionId: string;
+  questionText: string;
+  questionType: QuestionType;
+  points: number;
+  options: QuestionOption[];
+  selectedOption?: number;
+  textAnswer?: string;
+  isCorrect?: boolean;
+  pointsEarned?: number;
+  correctOptionIndex?: number;
+  correctAnswer?: string;
+  explanation?: string;
+}
+
+export interface ExamReview {
+  attemptId: string;
+  exam: Pick<Exam, '_id' | 'title' | 'subject'> & {
+    settings: Pick<ExamSettings, 'showResults' | 'allowReview' | 'passingMarks' | 'totalMarks'>;
+  };
+  score?: number;
+  totalPoints?: number;
+  percentage?: number;
+  passed?: boolean;
+  timeSpent?: number;
+  completedAt?: string;
+  questions: ReviewQuestion[];
 }
 
 export interface ExamStats {

@@ -38,6 +38,7 @@ const question = {
   points: 2,
   difficulty: 'easy',
   subject: 'Maths',
+  explanation: 'Two plus two equals four.',
 };
 
 const exam = {
@@ -54,23 +55,11 @@ const exam = {
     shuffleQuestions: false,
     shuffleOptions: false,
     showResults: true,
-    allowReview: false,
+    allowReview: true,
     maxAttempts: 1,
     isPublished: true,
   },
   accessCode: 'ABCD1234',
-};
-
-const attempt = {
-  _id: 'a1',
-  exam,
-  student,
-  answers: [{ question: 'q1', pointsEarned: 0 }],
-  score: 0,
-  totalPoints: 2,
-  percentage: 0,
-  status: 'in-progress',
-  startedAt: new Date().toISOString(),
 };
 
 // Paid past-question paper (Biology 2022) — the monetised flow.
@@ -81,7 +70,7 @@ const pastExam = {
   subject: 'Biology',
   source: 'past',
   year: 2022,
-  pricing: { entryFee: 500, reviewFee: 100, currency: 'NGN' },
+  pricing: { entryFee: 300, reviewFee: 500, currency: 'NGN' },
   questionCount: 10,
   settings: {
     duration: 60,
@@ -98,33 +87,20 @@ const pastExam = {
   startable: false,
 };
 
-const reviewPayload = {
-  exam: { _id: 'e1', title: 'Sample Quiz', subject: 'Maths', source: 'teacher', year: null },
-  attempt: { _id: 'a1', score: 2, totalPoints: 2, percentage: 100, status: 'completed' },
-  items: [
-    {
-      questionId: 'q1',
-      questionText: 'What is 2 + 2?',
-      questionType: 'multiple-choice',
-      options: [
-        { text: '3', isCorrect: false, isSelected: false },
-        { text: '4', isCorrect: true, isSelected: true },
-        { text: '5', isCorrect: false, isSelected: false },
-      ],
-      correctAnswer: null,
-      correctOptionIndex: 1,
-      selectedOption: 1,
-      textAnswer: '',
-      isCorrect: true,
-      pointsEarned: 2,
-      maxPoints: 2,
-      explanation: 'Two plus two equals four.',
-    },
-  ],
-};
-
 // References marked paid via the dev-mode payment flow.
 const paidReferences = new Set();
+
+const attempt = {
+  _id: 'a1',
+  exam,
+  student,
+  answers: [{ question: 'q1', pointsEarned: 0 }],
+  score: 0,
+  totalPoints: 2,
+  percentage: 0,
+  status: 'in-progress',
+  startedAt: new Date().toISOString(),
+};
 
 const calls = [];
 
@@ -152,31 +128,7 @@ const server = http.createServer((req, res) => {
     }
     calls.push({ key, authed, body });
 
-    // Routes that require a token.
-    const needsAuth = [
-      'GET /api/auth/me',
-      'GET /api/exams/my-exams',
-      'POST /api/exams/join',
-      'GET /api/exams/past',
-      'GET /api/attempts/my-attempts',
-      'POST /api/attempts/start',
-      'GET /api/questions',
-      'GET /api/admin/stats',
-      'POST /api/payments/initiate',
-      'GET /api/payments/my-payments',
-      'GET /api/admin/payments',
-    ];
-    if (needsAuth.includes(key) && !authed) {
-      return send(res, 401, { message: 'No token, access denied' });
-    }
-
     // Dynamic routes (path params).
-    const reviewMatch = key.match(/^GET \/api\/attempts\/([^/]+)\/review$/);
-    if (reviewMatch) {
-      if (!authed) return send(res, 401, { message: 'No token, access denied' });
-      return send(res, 200, reviewPayload);
-    }
-
     const devCompleteMatch = key.match(/^POST \/api\/payments\/([^/]+)\/dev-complete$/);
     if (devCompleteMatch) {
       if (!authed) return send(res, 401, { message: 'No token, access denied' });
@@ -187,7 +139,7 @@ const server = http.createServer((req, res) => {
           _id: 'p1',
           reference: devCompleteMatch[1],
           purpose: 'entry',
-          amount: 500,
+          amount: 300,
           currency: 'NGN',
           status: 'paid',
         },
@@ -203,12 +155,29 @@ const server = http.createServer((req, res) => {
           _id: 'p1',
           reference: verifyMatch[1],
           purpose: 'entry',
-          amount: 500,
+          amount: 300,
           currency: 'NGN',
           status: paid ? 'paid' : 'pending',
         },
         paid,
       });
+    }
+
+    // Routes that require a token.
+    const needsAuth = [
+      'GET /api/auth/me',
+      'PATCH /api/auth/change-password',
+      'GET /api/exams/my-exams',
+      'POST /api/exams/join',
+      'GET /api/attempts/my-attempts',
+      'POST /api/attempts/start',
+      'POST /api/attempts/a1/security-flag',
+      'GET /api/attempts/a1/review',
+      'GET /api/questions',
+      'GET /api/admin/stats',
+    ];
+    if (needsAuth.includes(key) && !authed) {
+      return send(res, 401, { message: 'No token, access denied' });
     }
 
     switch (key) {
@@ -234,6 +203,12 @@ const server = http.createServer((req, res) => {
 
       case 'GET /api/auth/me':
         return send(res, 200, { user: student });
+
+      case 'PATCH /api/auth/change-password':
+        if (body.currentPassword === 'wrong') {
+          return send(res, 401, { message: 'Current password is incorrect' });
+        }
+        return send(res, 200, { message: 'Password changed successfully' });
 
       case 'POST /api/auth/guest-register':
         return send(res, 200, {
@@ -284,7 +259,7 @@ const server = http.createServer((req, res) => {
             _id: 'p1',
             reference: 'PST-MOCK-1',
             purpose: body.purpose || 'entry',
-            amount: body.purpose === 'review' ? 100 : 500,
+            amount: body.purpose === 'review' ? 500 : 300,
             currency: 'NGN',
             provider: 'sandbox',
             status: 'pending',
@@ -340,7 +315,7 @@ const server = http.createServer((req, res) => {
             paymentRequired: true,
             purpose: 'entry',
             examId: 'e2',
-            amount: 500,
+            amount: 300,
             currency: 'NGN',
           });
         }
@@ -353,6 +328,8 @@ const server = http.createServer((req, res) => {
         return send(res, 200, {
           message: 'Exam submitted successfully',
           showResults: true,
+          allowReview: exam.settings.allowReview,
+          attemptId: 'a1',
           score: 2,
           totalPoints: 2,
           percentage: '100.00',
@@ -360,9 +337,55 @@ const server = http.createServer((req, res) => {
           passed: true,
         });
 
+      case 'POST /api/attempts/a1/security-flag':
+        return send(res, 200, {
+          message: 'Safe exam mode warning recorded',
+          warningCount: 1,
+          warningsRemaining: 2,
+          autoSubmitted: false,
+        });
+
+      case 'GET /api/attempts/a1/review':
+        if (!exam.settings.allowReview) {
+          return send(res, 403, { message: 'Review is not enabled for this exam' });
+        }
+        return send(res, 200, {
+          attemptId: 'a1',
+          exam: {
+            _id: exam._id,
+            title: exam.title,
+            subject: exam.subject,
+            settings: {
+              showResults: exam.settings.showResults,
+              allowReview: exam.settings.allowReview,
+              passingMarks: exam.settings.passingMarks,
+              totalMarks: exam.settings.totalMarks,
+            },
+          },
+          score: 2,
+          totalPoints: 2,
+          percentage: 100,
+          passed: true,
+          timeSpent: 42,
+          questions: [{
+            order: 0,
+            questionId: 'q1',
+            questionText: question.questionText,
+            questionType: question.questionType,
+            points: 2,
+            options: question.options.map(({ _id, text }) => ({ _id, text })),
+            selectedOption: 1,
+            isCorrect: true,
+            pointsEarned: 2,
+            correctOptionIndex: 1,
+            correctAnswer: '4',
+            explanation: question.explanation,
+          }],
+        });
+
       case 'GET /api/attempts/my-attempts':
         return send(res, 200, [
-          { ...attempt, status: 'completed', score: 2, percentage: 100, timeSpent: 42 },
+          { ...attempt, answers: undefined, status: 'completed', score: 2, percentage: 100, timeSpent: 42, canReview: exam.settings.allowReview },
         ]);
 
       case 'GET /api/questions':

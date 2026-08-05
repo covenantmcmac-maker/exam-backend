@@ -9,7 +9,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 import { useAuth } from '../context/AuthContext';
 import { useColors } from '../context/ThemeContext';
-import { useDialog } from '../components/Dialog';
 import type { Colors } from '../theme';
 import { Loading } from '../components/ui';
 
@@ -18,7 +17,6 @@ import RegisterScreen from '../screens/auth/RegisterScreen';
 import GuestJoinScreen from '../screens/auth/GuestJoinScreen';
 
 import StudentHomeScreen from '../screens/student/StudentHomeScreen';
-import PastQuestionsScreen from '../screens/student/PastQuestionsScreen';
 import ResultsScreen from '../screens/student/ResultsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 
@@ -31,10 +29,12 @@ import QuestionEditorScreen from '../screens/teacher/QuestionEditorScreen';
 
 import ExamTakingScreen from '../screens/exam/ExamTakingScreen';
 import ExamResultScreen from '../screens/exam/ExamResultScreen';
-import AnswerReviewScreen from '../screens/exam/AnswerReviewScreen';
+import ExamReviewScreen from '../screens/exam/ExamReviewScreen';
+import PastQuestionsScreen from '../screens/student/PastQuestionsScreen';
+import { paymentsApi } from '../api/endpoints';
+import { useDialog } from '../components/Dialog';
 import BulkImportScreen from '../screens/teacher/BulkImportScreen';
 import AdminPanelScreen from '../screens/admin/AdminPanelScreen';
-import { paymentsApi } from '../api/endpoints';
 
 import type {
   AuthStackParamList,
@@ -241,9 +241,9 @@ export default function RootNavigator() {
               options={{ headerShown: false, gestureEnabled: false }}
             />
             <RootStack.Screen
-              name="AnswerReview"
-              component={AnswerReviewScreen}
-              options={{ title: 'Answer review' }}
+              name="ExamReview"
+              component={ExamReviewScreen}
+              options={{ title: 'Exam review' }}
             />
             <RootStack.Screen name="ExamBuilder" component={ExamBuilderScreen} />
             <RootStack.Screen name="ExamStats" component={ExamStatsScreen} />

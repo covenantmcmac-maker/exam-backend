@@ -29,8 +29,8 @@ export default function ExamResultScreen({ route, navigation }: Props) {
     passed,
     timeSpent,
     examTitle,
+    allowReview,
     attemptId,
-    reviewEnabled,
   } = route.params;
   const { isTeacher } = useAuth();
 
@@ -99,16 +99,16 @@ export default function ExamResultScreen({ route, navigation }: Props) {
           </>
         )}
 
-        {!!attemptId && reviewEnabled && (
+        {allowReview && attemptId && (
           <Button
             title="Review answers"
             variant="secondary"
-            style={{ marginTop: spacing.md }}
-            onPress={() => navigation.navigate('AnswerReview', { attemptId })}
+            onPress={() => navigation.navigate('ExamReview', { attemptId })}
+            style={{ marginTop: spacing.lg }}
           />
         )}
 
-        <Button title="Back to home" onPress={goHome} style={{ marginTop: spacing.lg }} />
+        <Button title="Back to home" onPress={goHome} style={{ marginTop: spacing.md }} />
       </ScrollView>
     </SafeAreaView>
   );

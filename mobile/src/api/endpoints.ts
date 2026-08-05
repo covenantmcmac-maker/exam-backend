@@ -3,10 +3,10 @@ import type { UploadableFile } from './client';
 import type {
   AdminPaymentsResult,
   AdminStats,
-  AnswerReview,
   AppConfig,
   Exam,
   ExamAttempt,
+  ExamReview,
   ExamStats,
   InitiatePaymentResult,
   PastExam,
@@ -14,6 +14,7 @@ import type {
   PaymentPurpose,
   Question,
   Role,
+  SecurityFlagResult,
   SubmitResult,
   User,
   VerifyPaymentResult,
@@ -49,6 +50,12 @@ export const authApi = {
     }),
 
   me: () => request<{ user: User }>('/api/auth/me'),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ message: string }>('/api/auth/change-password', {
+      method: 'PATCH',
+      body: { currentPassword, newPassword },
+    }),
 
   guestRegister: (name: string, email: string, examCode: string) =>
     request<AuthResponse & { examId: string }>('/api/auth/guest-register', {
@@ -171,11 +178,21 @@ export const attemptsApi = {
   submit: (attemptId: string) =>
     request<SubmitResult>(`/api/attempts/${attemptId}/submit`, { method: 'POST' }),
 
-  /** Full answer review — paid for students when the exam carries a review fee. */
-  review: (attemptId: string) =>
-    request<AnswerReview>(`/api/attempts/${attemptId}/review`),
+  reportViolation: (attemptId: string, type: 'copy' | 'paste' | 'screenshot' | 'app-background' | 'print-screen') =>
+    request<{ message: string; violationCount: number; submitted: boolean; result?: SubmitResult }>(
+      `/api/attempts/${attemptId}/violation`,
+      { method: 'POST', body: { type } }
+    ),
+  flagSecurity: (attemptId: string, reason: string) =>
+    request<SecurityFlagResult>(`/api/attempts/${attemptId}/security-flag`, {
+      method: 'POST',
+      body: { reason },
+    }),
 
   myAttempts: () => request<ExamAttempt[]>('/api/attempts/my-attempts'),
+
+  review: (attemptId: string) =>
+    request<ExamReview>(`/api/attempts/${attemptId}/review`),
 
   grade: (attemptId: string, grades: { questionId: string; pointsEarned: number }[]) =>
     request<{ message: string; attempt: ExamAttempt }>(`/api/attempts/${attemptId}/grade`, {
@@ -235,17 +252,12 @@ export const adminApi = {
   removeUser: (id: string) =>
     request<{ message: string }>(`/api/admin/users/${id}`, { method: 'DELETE' }),
 
-  exams: (params: { source?: 'teacher' | 'past' } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.source) qs.append('source', params.source);
-    const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    return request<Exam[]>(`/api/admin/exams${suffix}`);
-  },
+  payments: () => request<AdminPaymentsResult>('/api/admin/payments'),
+
+  exams: () => request<Exam[]>('/api/admin/exams'),
 
   removeExam: (id: string) =>
     request<{ message: string }>(`/api/admin/exams/${id}`, { method: 'DELETE' }),
-
-  payments: () => request<AdminPaymentsResult>('/api/admin/payments'),
 
   attempts: () => request<ExamAttempt[]>('/api/admin/attempts'),
 

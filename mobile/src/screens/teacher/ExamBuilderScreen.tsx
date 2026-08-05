@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -10,8 +10,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field, Loading } from '../../components/ui';
 import { configApi, examsApi, questionsApi } from '../../api/endpoints';
-import { useDialog } from '../../components/Dialog';
 import { useAuth } from '../../context/AuthContext';
+import { useDialog } from '../../components/Dialog';
 import { difficultyColor, radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
@@ -37,8 +37,10 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [maxAttempts, setMaxAttempts] = useState('1');
   const [shuffle, setShuffle] = useState(false);
   const [showResults, setShowResults] = useState(true);
+  // Answer review is enabled by default; the toggle turns it off (or on).
   const [allowReview, setAllowReview] = useState(true);
   const [publish, setPublish] = useState(false);
+  const [safeMode, setSafeMode] = useState(false);
 
   // Monetisation. Teacher exams: free to take, teacher-set review fee.
   // Past papers (admin only): platform entry fee + review fee.
@@ -51,6 +53,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [bank, setBank] = useState<Question[]>([]);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [search, setSearch] = useState('');
+  const [subjectFilter, setSubjectFilter] = useState<string>('all');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -84,6 +87,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           setShowResults(exam.settings?.showResults !== false);
           setAllowReview(exam.settings?.allowReview !== false);
           setPublish(!!exam.settings?.isPublished);
+          setSafeMode(!!exam.settings?.safeMode);
 
           if (exam.source === 'past') setPastMode(true);
           if (exam.year) setYear(String(exam.year));
@@ -96,10 +100,10 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             if (id) picked[id] = q.points || 1;
           });
           setSelected(picked);
-        } else if (!cancelled) {
+        } else {
           // Prefill the platform's default fees so the price is always
-          // visible (teachers can still set 0 for free review):
-          // past papers → ₦300 entry + ₦500 review; teacher exams → ₦500 review.
+          // visible: past papers → ₦300 entry + ₦500 review; teacher exams
+          // → ₦500 review (can be set to 0 for free review).
           setReviewFee(String(cfg.defaultReviewFee ?? 500));
           if (route.params?.source === 'past') {
             setEntryFee(String(cfg.defaultEntryFee ?? 300));
@@ -117,15 +121,109 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     };
   }, [examId]);
 
+  const subjects = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const q of bank) {
+      const s = (q.subject || '').trim();
+      if (!s) continue;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ name, count }));
+  }, [bank]);
+
+  const effectiveSubject =
+    subjectFilter === 'all' || subjects.some((s) => s.name === subjectFilter)
+      ? subjectFilter
+      : 'all';
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return bank;
-    return bank.filter(
-      (q) =>
+    return bank.filter((q) => {
+      const matchesTerm =
+        !term ||
         q.questionText.toLowerCase().includes(term) ||
-        (q.subject || '').toLowerCase().includes(term)
-    );
-  }, [bank, search]);
+        (q.subject || '').toLowerCase().includes(term);
+      const matchesSubject =
+        effectiveSubject === 'all' || (q.subject || '').trim() === effectiveSubject;
+      return matchesTerm && matchesSubject;
+    });
+  }, [bank, search, effectiveSubject]);
+
+  const isSubjectFullySelected = useCallback(
+    (subjName: string) => {
+      const subjQuestions = bank.filter((q) => (q.subject || '').trim() === subjName);
+      if (subjQuestions.length === 0) return false;
+      return subjQuestions.every((q) => selected[q._id] !== undefined);
+    },
+    [bank, selected]
+  );
+
+  const getSubjectSelectedCount = useCallback(
+    (subjName: string) => {
+      return bank
+        .filter((q) => (q.subject || '').trim() === subjName)
+        .reduce((count, q) => count + (selected[q._id] !== undefined ? 1 : 0), 0);
+    },
+    [bank, selected]
+  );
+
+  const selectBySubject = useCallback(
+    (subjName: string) => {
+      setSelected((prev) => {
+        const next = { ...prev };
+        bank.forEach((q) => {
+          if ((q.subject || '').trim() === subjName) {
+            next[q._id] = q.points || 1;
+          }
+        });
+        return next;
+      });
+    },
+    [bank]
+  );
+
+  const deselectBySubject = useCallback(
+    (subjName: string) => {
+      setSelected((prev) => {
+        const next = { ...prev };
+        bank.forEach((q) => {
+          if ((q.subject || '').trim() === subjName) {
+            delete next[q._id];
+          }
+        });
+        return next;
+      });
+    },
+    [bank]
+  );
+
+  const selectAllFiltered = useCallback(() => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      filtered.forEach((q) => {
+        next[q._id] = q.points || 1;
+      });
+      return next;
+    });
+  }, [filtered]);
+
+  const deselectAllFiltered = useCallback(() => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      filtered.forEach((q) => {
+        delete next[q._id];
+      });
+      return next;
+    });
+  }, [filtered]);
+
+  const getSubjectButtonLabel = (name: string, total: number, selectedCount: number) => {
+    if (selectedCount === 0) return `+ Select all ${name} (${total})`;
+    if (selectedCount === total) return `✓ ${name} (${total}/${total})`;
+    return `+ Select all ${name} (${selectedCount}/${total})`;
+  };
 
   const selectedIds = Object.keys(selected);
   const totalMarks = selectedIds.reduce((sum, id) => sum + (selected[id] || 1), 0);
@@ -166,6 +264,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         showResults,
         allowReview,
         isPublished: publish,
+        safeMode,
       },
     };
 
@@ -234,35 +333,6 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           />
         </Card>
 
-        {isAdmin && !isEdit && (
-          <Card>
-            <Text style={styles.section}>Exam type</Text>
-            <View style={styles.typeRow}>
-              <Pressable
-                onPress={() => setPastMode(false)}
-                style={[styles.typeOption, !pastMode && styles.typeOptionActive]}
-              >
-                <Text style={[styles.typeText, !pastMode && styles.typeTextActive]}>
-                  📝 Teacher exam
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setPastMode(true)}
-                style={[styles.typeOption, pastMode && styles.typeOptionActive]}
-              >
-                <Text style={[styles.typeText, pastMode && styles.typeTextActive]}>
-                  📚 Past questions
-                </Text>
-              </Pressable>
-            </View>
-            <Text style={styles.typeHint}>
-              {pastMode
-                ? 'Platform-owned paper sold to students (entry + review fees).'
-                : 'Teacher-set exam shared by access code — always free to take.'}
-            </Text>
-          </Card>
-        )}
-
         <Card>
           <Text style={styles.section}>Settings</Text>
           <View style={styles.settingsRow}>
@@ -296,12 +366,51 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             onChange={setShowResults}
           />
           <Toggle
-            label="Allow answer review"
+            label="Safe exam mode (block/flag copy, screenshots and leaving app)"
+            value={safeMode}
+            onChange={setSafeMode}
+          />
+          <Text style={styles.settingHelp}>Three recorded violations automatically submit the attempt.</Text>
+          <Toggle
+            label="Allow students to review answers"
             value={allowReview}
             onChange={setAllowReview}
           />
+          <Text style={styles.settingHint}>
+            Reviews show students the correct answer and any explanation you entered after they
+            finish. A paid review fee can be set below.
+          </Text>
           <Toggle label="Publish immediately" value={publish} onChange={setPublish} />
         </Card>
+
+        {isAdmin && !isEdit && (
+          <Card>
+            <Text style={styles.section}>Exam type</Text>
+            <View style={styles.typeRow}>
+              <Pressable
+                onPress={() => setPastMode(false)}
+                style={[styles.typeOption, !pastMode && styles.typeOptionActive]}
+              >
+                <Text style={[styles.typeText, !pastMode && styles.typeTextActive]}>
+                  📝 Teacher exam
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setPastMode(true)}
+                style={[styles.typeOption, pastMode && styles.typeOptionActive]}
+              >
+                <Text style={[styles.typeText, pastMode && styles.typeTextActive]}>
+                  📚 Past questions
+                </Text>
+              </Pressable>
+            </View>
+            <Text style={styles.settingHint}>
+              {pastMode
+                ? 'Platform-owned paper sold to students (entry + review fees).'
+                : 'Teacher-set exam shared by access code — always free to take.'}
+            </Text>
+          </Card>
+        )}
 
         <Card>
           <Text style={styles.section}>
@@ -323,7 +432,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
                 value={entryFee}
                 onChangeText={setEntryFee}
                 keyboardType="number-pad"
-                placeholder="500"
+                placeholder="300"
                 style={{ textAlign: 'center' }}
               />
             </View>
@@ -334,7 +443,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={reviewFee}
             onChangeText={setReviewFee}
             keyboardType="number-pad"
-            placeholder="100"
+            placeholder="500"
             hint={
               pastMode
                 ? 'Students pay this once, after submitting, to open the answer review.'
@@ -355,11 +464,123 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={search}
             onChangeText={setSearch}
             placeholder="Search your question bank…"
+            style={{ marginBottom: spacing.sm }}
           />
+
+          {subjects.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.subjectRow}
+            >
+              <Pressable
+                onPress={() => setSubjectFilter('all')}
+                style={[styles.chip, effectiveSubject === 'all' && styles.chipActive]}
+              >
+                <Text
+                  style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
+                >
+                  All subjects ({bank.length})
+                </Text>
+              </Pressable>
+              {subjects.map((s) => {
+                const active = effectiveSubject === s.name;
+                return (
+                  <Pressable
+                    key={s.name}
+                    onPress={() => setSubjectFilter(s.name)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {s.name} ({s.count})
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
+
+          {bank.length > 0 && (
+            <View style={styles.selectionToolbar}>
+              {subjects.length > 0 && (
+                <View style={styles.subjectSelectWrap}>
+                  <Text style={styles.subjectSelectLabel}>Select all by subject:</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.subjectActionScroll}
+                  >
+                    {subjects.map((s) => {
+                      const allSelected = isSubjectFullySelected(s.name);
+                      const selectedCount = getSubjectSelectedCount(s.name);
+                      return (
+                        <Pressable
+                          key={s.name}
+                          onPress={() =>
+                            allSelected
+                              ? deselectBySubject(s.name)
+                              : selectBySubject(s.name)
+                          }
+                          style={[
+                            styles.subjectActionChip,
+                            allSelected && styles.subjectActionChipActive,
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            allSelected
+                              ? `Deselect all ${s.name} questions`
+                              : `Select all ${s.name} questions`
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.subjectActionText,
+                              allSelected && styles.subjectActionTextActive,
+                            ]}
+                          >
+                            {getSubjectButtonLabel(s.name, s.count, selectedCount)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+
+              <View style={styles.bulkActionsRow}>
+                <Pressable
+                  onPress={selectAllFiltered}
+                  style={styles.bulkBtn}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.bulkBtnText}>
+                    {effectiveSubject === 'all'
+                      ? `Select all (${filtered.length})`
+                      : `Select all ${effectiveSubject} (${filtered.length})`}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={deselectAllFiltered}
+                  style={styles.bulkBtn}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.bulkBtnText}>
+                    {effectiveSubject === 'all'
+                      ? 'Deselect all'
+                      : `Deselect all ${effectiveSubject}`}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
 
           {bank.length === 0 ? (
             <Text style={styles.emptyBank}>
               Your question bank is empty. Add questions from the Questions tab first.
+            </Text>
+          ) : filtered.length === 0 ? (
+            <Text style={styles.emptyBank}>
+              No questions match your filter.
             </Text>
           ) : (
             filtered.map((q) => {
@@ -443,14 +664,8 @@ const makeStyles = (colors: Colors) =>
     paddingVertical: spacing.sm,
   },
   toggleLabel: { fontSize: 15, color: colors.text, flex: 1 },
-  pickHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.md,
-  },
-  pickCount: { fontSize: 13, fontWeight: '700', color: colors.primary, marginBottom: spacing.lg },
-  emptyBank: { fontSize: 14, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.lg },
+  settingHelp: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginTop: -spacing.xs, marginBottom: spacing.sm },
+  settingHint: { fontSize: 12, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.sm },
   typeRow: { flexDirection: 'row', gap: spacing.md },
   typeOption: {
     flex: 1,
@@ -464,7 +679,14 @@ const makeStyles = (colors: Colors) =>
   typeOptionActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
   typeText: { fontSize: 14, fontWeight: '700', color: colors.textMuted },
   typeTextActive: { color: colors.primary },
-  typeHint: { fontSize: 12, color: colors.textLight, marginTop: spacing.sm },
+  pickHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  pickCount: { fontSize: 13, fontWeight: '700', color: colors.primary, marginBottom: spacing.lg },
+  emptyBank: { fontSize: 14, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.lg },
   qRow: {
     flexDirection: 'row',
     gap: spacing.md,
@@ -492,4 +714,81 @@ const makeStyles = (colors: Colors) =>
   qMetaRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' },
   qDifficulty: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
   qMeta: { fontSize: 12, color: colors.textMuted },
+  subjectRow: { gap: spacing.sm, marginTop: spacing.xs, marginBottom: spacing.md },
+  chip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipText: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textTransform: 'capitalize',
+    fontWeight: '600',
+  },
+  chipTextActive: { color: colors.white },
+  selectionToolbar: {
+    marginBottom: spacing.md,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  subjectSelectWrap: {
+    marginBottom: spacing.md,
+  },
+  subjectSelectLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textMuted,
+    marginBottom: spacing.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  subjectActionScroll: {
+    gap: spacing.sm,
+  },
+  subjectActionChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  subjectActionChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  subjectActionText: {
+    fontSize: 13,
+    color: colors.primary,
+    fontWeight: '700',
+  },
+  subjectActionTextActive: {
+    color: colors.white,
+  },
+  bulkActionsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  bulkBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bulkBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
 });
