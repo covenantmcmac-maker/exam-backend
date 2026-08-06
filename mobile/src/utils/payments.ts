@@ -36,14 +36,30 @@ export async function initiatePayment(
   };
 }
 
-/** Open the Paystack checkout page (new tab on web, browser on native). */
+/**
+ * Open the Paystack checkout page.
+ *
+ * On web, Linking.openURL() can fail silently after the async API request
+ * because browsers treat it as a popup. Try a new tab first, then fall back
+ * to navigating the current tab so the student is never left on a fake
+ * "pending" screen with no checkout page.
+ */
 export async function openCheckout(url: string | null): Promise<void> {
-  if (!url) return;
-  try {
-    await Linking.openURL(url);
-  } catch {
-    /* Caller shows its own error. */
+  if (!url) {
+    throw new Error('Paystack did not return a checkout link. Please try again.');
   }
+
+  if (typeof window !== 'undefined' && typeof window.open === 'function') {
+    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+    if (popup) return;
+
+    // Popup blockers commonly reject window.open after an async request.
+    // Same-tab navigation is reliable and still takes the student to Paystack.
+    window.location.assign(url);
+    return;
+  }
+
+  await Linking.openURL(url);
 }
 
 /** Ask the server whether a payment reference has settled. */

@@ -127,8 +127,11 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
         void load();
         return;
       }
-      setPendingRef(outcome.reference);
+      // Only show the pending state after a real checkout URL has been
+      // returned and the browser has been sent to Paystack. openCheckout()
+      // throws when Paystack did not provide a URL.
       await openCheckout(outcome.authorizationUrl);
+      setPendingRef(outcome.reference);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Payment could not be started.');
     } finally {
