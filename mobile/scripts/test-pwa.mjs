@@ -117,6 +117,11 @@ if (has('service-worker.js')) {
   check('bypasses cross-origin requests', /url\.origin !== self\.location\.origin/.test(sw));
   check('only intercepts GET', /request\.method !== 'GET'/.test(sw));
   check('navigations are network-first', /request\.mode === 'navigate'/.test(sw));
+  check(
+    'updates wait for the Refresh action before activating',
+    (sw.match(/self\.skipWaiting\(\)/g) || []).length === 1 &&
+      /event\.data === 'SKIP_WAITING'/.test(sw)
+  );
 
   // The precache list must reference files that actually exist.
   const listMatch = sw.match(/const PRECACHE = (\[[\s\S]*?\]);/);

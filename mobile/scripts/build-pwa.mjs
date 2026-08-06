@@ -80,7 +80,9 @@ self.addEventListener('install', (event) => {
       const cache = await caches.open(SHELL_CACHE);
       // Bypass the HTTP cache so a redeploy can't precache a stale shell.
       await cache.addAll(PRECACHE.map((url) => new Request(url, { cache: 'reload' })));
-      await self.skipWaiting();
+      // Do not call skipWaiting here. Updates must remain in the waiting state
+      // until the user presses Refresh; otherwise controllerchange can happen
+      // before the page has installed its reload listener.
     })()
   );
 });
