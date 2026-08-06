@@ -48,6 +48,7 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [pendingRef, setPendingRef] = useState<string | null>(null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
 
   const symbol = config?.currencySymbol || '₦';
 
@@ -59,6 +60,8 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
     setLoading(true);
     setError(null);
     setPaywall(null);
+    setPendingRef(null);
+    setCheckoutUrl(null);
     try {
       const [data, cfg] = await Promise.all([attemptsApi.review(attemptId), configApi.get()]);
       setConfig(cfg);
@@ -130,10 +133,13 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
       // Only show the pending state after a real checkout URL has been
       // returned and the browser has been sent to Paystack. openCheckout()
       // throws when Paystack did not provide a URL.
+      setCheckoutUrl(outcome.authorizationUrl);
       await openCheckout(outcome.authorizationUrl);
       setPendingRef(outcome.reference);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Payment could not be started.');
+      setPendingRef(null);
+      setCheckoutUrl(null);
     } finally {
       setBusy(false);
     }
@@ -159,15 +165,25 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
             {pendingRef ? (
               <>
                 <Text style={styles.paywallPending}>
-                  Payment pending… complete it in the Paystack window, then confirm.
+                  Payment pending… if the Paystack page did not open automatically, use the button
+                  below to reopen it. After paying, return here and confirm.
                 </Text>
+                <Button
+                  title="Reopen Paystack"
+                  variant="ghost"
+                  onPress={() => {
+                    if (checkoutUrl) void openCheckout(checkoutUrl).catch(() => {});
+                  }}
+                />
                 <Button
                   title="I've paid — confirm"
                   loading={busy}
+                  style={{ marginTop: spacing.sm }}
                   onPress={async () => {
                     const paid = await verifyPayment(pendingRef);
                     if (paid) {
                       setPendingRef(null);
+                      setCheckoutUrl(null);
                       await dialog.notify('Payment successful 🎉', 'Review unlocked.');
                       void load();
                     } else {

@@ -49,6 +49,7 @@ export default function PastQuestionsScreen({ navigation }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pendingRef, setPendingRef] = useState<string | null>(null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
 
   const symbol = config?.currencySymbol || '₦';
 
@@ -117,13 +118,20 @@ export default function PastQuestionsScreen({ navigation }: Props) {
         return;
       }
       // Real Paystack checkout: open it and wait for confirmation.
+      setCheckoutUrl(outcome.authorizationUrl);
       setPendingRef(outcome.reference);
       await openCheckout(outcome.authorizationUrl);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Payment could not be started.');
+      setPendingRef(null);
+      setCheckoutUrl(null);
     } finally {
       setBusyId(null);
     }
+  };
+
+  const reopenCheckout = () => {
+    if (checkoutUrl) void openCheckout(checkoutUrl).catch(() => {});
   };
 
   /* --------------------------------------------------------------- action */
@@ -205,9 +213,17 @@ export default function PastQuestionsScreen({ navigation }: Props) {
         <Card style={styles.pendingCard}>
           <Text style={styles.pendingTitle}>⏳ Payment pending</Text>
           <Text style={styles.pendingText}>
-            Complete the payment in the Paystack window, then confirm here.
+            If the Paystack page did not open automatically, reopen it below. After paying,
+            return here and confirm.
           </Text>
           <View style={styles.pendingActions}>
+            <Button
+              title="Reopen Paystack"
+              variant="ghost"
+              size="sm"
+              style={{ flex: 1 }}
+              onPress={reopenCheckout}
+            />
             <Button
               title="I've paid — confirm"
               size="sm"
@@ -216,6 +232,7 @@ export default function PastQuestionsScreen({ navigation }: Props) {
                 const paid = await verifyPayment(pendingRef);
                 if (paid) {
                   setPendingRef(null);
+                  setCheckoutUrl(null);
                   await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
                   void load();
                 } else {
@@ -230,7 +247,10 @@ export default function PastQuestionsScreen({ navigation }: Props) {
               title="Cancel"
               variant="ghost"
               size="sm"
-              onPress={() => setPendingRef(null)}
+              onPress={() => {
+                setPendingRef(null);
+                setCheckoutUrl(null);
+              }}
             />
           </View>
         </Card>
