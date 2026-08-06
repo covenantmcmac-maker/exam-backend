@@ -70,6 +70,10 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   const [payBusy, setPayBusy] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
   const [pendingRef, setPendingRef] = useState<string | null>(null);
+  // The Paystack URL for the current pending payment. Keeping it lets us offer
+  // a "Reopen Paystack" button when a popup blocker swallowed the original
+  // window instead of leaving the student stuck on the pending screen.
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 
   const submittedRef = useRef(false);
@@ -86,6 +90,8 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     setLoadError(null);
     setPaywall(null);
     setPayError(null);
+    setPendingRef(null);
+    setCheckoutUrl(null);
     try {
       tokenRef.current = await getToken();
       const examData = await examsApi.take(examId);
@@ -158,9 +164,12 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
         return;
       }
       setPendingRef(outcome.reference);
+      setCheckoutUrl(outcome.authorizationUrl);
       await openCheckout(outcome.authorizationUrl);
     } catch (e) {
       setPayError(e instanceof Error ? e.message : 'Payment could not be started.');
+      setPendingRef(null);
+      setCheckoutUrl(null);
     } finally {
       setPayBusy(false);
     }
@@ -570,15 +579,25 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
           {pendingRef ? (
             <>
               <Text style={styles.paywallText}>
-                Payment pending… complete it in the Paystack window, then confirm here.
+                Payment pending… if the Paystack page did not open automatically, use the button
+                below to reopen it. After paying, return here and confirm.
               </Text>
               <Button
-                title="I've paid — confirm"
+                title="Reopen Paystack"
+                variant="ghost"
                 style={{ marginTop: spacing.md, alignSelf: 'stretch' }}
+                onPress={() => {
+                  if (checkoutUrl) void openCheckout(checkoutUrl).catch(() => {});
+                }}
+              />
+              <Button
+                title="I've paid — confirm"
+                style={{ marginTop: spacing.sm, alignSelf: 'stretch' }}
                 onPress={async () => {
                   const paid = await verifyPayment(pendingRef);
                   if (paid) {
                     setPendingRef(null);
+                    setCheckoutUrl(null);
                     await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
                     void bootstrap();
                   } else {
