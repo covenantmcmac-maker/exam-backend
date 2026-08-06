@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState,
   BackHandler,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,13 +11,22 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, Loading } from '../../components/ui';
+import * as ScreenCapture from 'expo-screen-capture';
+import {
+  allowScreenCaptureAsync,
+  enableAppSwitcherProtectionAsync,
+  preventScreenCaptureAsync,
+} from 'expo-screen-capture';
+import { Button, Card, ErrorNote, Loading } from '../../components/ui';
 import { useDialog } from '../../components/Dialog';
-import { attemptsApi, examsApi } from '../../api/endpoints';
+import { attemptsApi, configApi, examsApi } from '../../api/endpoints';
+import { ApiError, getToken } from '../../api/client';
+import { API_BASE_URL } from '../../config';
+import { formatFee, initiatePayment, openCheckout, verifyPayment } from '../../utils/payments';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
-import type { Exam, Question } from '../../api/types';
+import type { AppConfig, Exam, Question, SubmitResult } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
 
@@ -27,6 +38,7 @@ interface Slot {
 }
 
 const TEXT_TYPES = ['short-answer', 'essay', 'fill-blank'];
+const MAX_SECURITY_WARNINGS = 3;
 
 function fmt(totalSeconds: number) {
   const s = Math.max(0, totalSeconds);
@@ -52,66 +64,126 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [securityWarnings, setSecurityWarnings] = useState(0);
+  // Set when the exam carries an entry fee that has not been paid yet.
+  const [paywall, setPaywall] = useState<{ amount: number } | null>(null);
+  const [payBusy, setPayBusy] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [pendingRef, setPendingRef] = useState<string | null>(null);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 
   const submittedRef = useRef(false);
   const attemptIdRef = useRef<string | null>(null);
   const deadlineRef = useRef<number | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const securityWarningsRef = useRef(0);
+  const lastSecurityFlagAtRef = useRef(0);
+  const securityFlaggingRef = useRef(false);
 
   /* ------------------------------------------------------------- bootstrap */
-  useEffect(() => {
-    let cancelled = false;
+  const bootstrap = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    setPaywall(null);
+    setPayError(null);
+    try {
+      tokenRef.current = await getToken();
+      const examData = await examsApi.take(examId);
+      const startRes = await attemptsApi.start(examId);
+      setAppConfig(await configApi.get());
 
-    (async () => {
-      try {
-        const examData = await examsApi.take(examId);
-        const startRes = await attemptsApi.start(examId);
-        if (cancelled) return;
+      const attempt = startRes.attempt;
+      attemptIdRef.current = attempt._id;
+      setAttemptId(attempt._id);
+      setExam(examData);
 
-        const attempt = startRes.attempt;
-        attemptIdRef.current = attempt._id;
-        setAttemptId(attempt._id);
-        setExam(examData);
+      const initialWarnings = attempt.securityViolations?.count || 0;
+      securityWarningsRef.current = initialWarnings;
+      setSecurityWarnings(initialWarnings);
 
-        const nextSlots: Slot[] = (examData.questions || [])
-          .filter((q) => q.question && typeof q.question === 'object')
-          .map((q) => ({ question: q.question as Question, points: q.points || 1 }));
-        setSlots(nextSlots);
+      const nextSlots: Slot[] = (examData.questions || [])
+        .filter((q) => q.question && typeof q.question === 'object')
+        .map((q) => ({ question: q.question as Question, points: q.points || 1 }));
+      setSlots(nextSlots);
 
-        // Restore any answers already saved on a resumed attempt.
-        const restored: Record<string, { option?: number; text?: string }> = {};
-        (attempt.answers || []).forEach((a) => {
-          const qid = typeof a.question === 'string' ? a.question : String(a.question);
-          if (a.selectedOption !== undefined && a.selectedOption !== null) {
-            restored[qid] = { ...restored[qid], option: a.selectedOption };
-          }
-          if (a.textAnswer) {
-            restored[qid] = { ...restored[qid], text: a.textAnswer };
-          }
-        });
-        setAnswers(restored);
+      // Restore any answers already saved on a resumed attempt.
+      const restored: Record<string, { option?: number; text?: string }> = {};
+      (attempt.answers || []).forEach((a) => {
+        const qid = typeof a.question === 'string' ? a.question : String(a.question);
+        if (a.selectedOption !== undefined && a.selectedOption !== null) {
+          restored[qid] = { ...restored[qid], option: a.selectedOption };
+        }
+        if (a.textAnswer) {
+          restored[qid] = { ...restored[qid], text: a.textAnswer };
+        }
+      });
+      setAnswers(restored);
 
-        // Timer continues from when the attempt actually started.
-        const durationSec = (examData.settings?.duration || 60) * 60;
-        const startedAt = new Date(attempt.startedAt).getTime();
-        const elapsed = Number.isNaN(startedAt)
-          ? 0
-          : Math.floor((Date.now() - startedAt) / 1000);
-        const left = Math.max(0, durationSec - Math.max(0, elapsed));
-        deadlineRef.current = Date.now() + left * 1000;
-        setRemaining(left);
-      } catch (e) {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Could not load exam.');
-      } finally {
-        if (!cancelled) setLoading(false);
+      // Timer continues from when the attempt actually started.
+      const durationSec = (examData.settings?.duration || 60) * 60;
+      const startedAt = new Date(attempt.startedAt).getTime();
+      const elapsed = Number.isNaN(startedAt)
+        ? 0
+        : Math.floor((Date.now() - startedAt) / 1000);
+      const left = Math.max(0, durationSec - Math.max(0, elapsed));
+      deadlineRef.current = Date.now() + left * 1000;
+      setRemaining(left);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 402) {
+        // Paid paper, entry fee not paid yet.
+        const amount = Number((e.data as { amount?: unknown })?.amount);
+        setPaywall({ amount: Number.isFinite(amount) ? amount : 0 });
+      } else {
+        setLoadError(e instanceof Error ? e.message : 'Could not load exam.');
       }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    } finally {
+      setLoading(false);
+    }
   }, [examId]);
 
+  useEffect(() => {
+    void bootstrap();
+  }, [bootstrap]);
+
+  /* ------------------------------------------------------- pay to unlock */
+  const payToUnlock = async () => {
+    if (!paywall) return;
+    setPayBusy(true);
+    setPayError(null);
+    try {
+      const outcome = await initiatePayment(examId, 'entry');
+      if (outcome.paid) {
+        await dialog.notify('Payment successful 🎉', 'Entry unlocked — starting the exam.');
+        void bootstrap();
+        return;
+      }
+      setPendingRef(outcome.reference);
+      await openCheckout(outcome.authorizationUrl);
+    } catch (e) {
+      setPayError(e instanceof Error ? e.message : 'Payment could not be started.');
+    } finally {
+      setPayBusy(false);
+    }
+  };
+
   /* ----------------------------------------------------------------- submit */
+  const openResult = useCallback(
+    (res: SubmitResult) => {
+      navigation.replace('ExamResult', {
+        showResults: res.showResults,
+        score: res.score,
+        totalPoints: res.totalPoints,
+        percentage: res.percentage,
+        passed: res.passed,
+        timeSpent: res.timeSpent,
+        allowReview: res.allowReview,
+        attemptId: res.attemptId || attemptIdRef.current || undefined,
+        examTitle: exam?.title,
+      });
+    },
+    [exam?.title, navigation]
+  );
+
   const doSubmit = useCallback(
     async (auto: boolean) => {
       const id = attemptIdRef.current;
@@ -121,15 +193,7 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
 
       try {
         const res = await attemptsApi.submit(id);
-        navigation.replace('ExamResult', {
-          showResults: res.showResults,
-          score: res.score,
-          totalPoints: res.totalPoints,
-          percentage: res.percentage,
-          passed: res.passed,
-          timeSpent: res.timeSpent,
-          examTitle: exam?.title,
-        });
+        openResult(res);
       } catch (e) {
         submittedRef.current = false;
         setSubmitting(false);
@@ -139,8 +203,168 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
         );
       }
     },
-    [dialog, exam?.title, navigation]
+    [dialog, openResult]
   );
+
+  const sendSecurityFlagKeepAlive = useCallback((reason: string) => {
+    const id = attemptIdRef.current;
+    const token = tokenRef.current;
+    if (!id || !token || typeof fetch === 'undefined') return;
+
+    try {
+      void fetch(`${API_BASE_URL}/api/attempts/${id}/security-flag`, {
+        method: 'POST',
+        keepalive: true,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ reason }),
+      });
+    } catch {
+      /* best-effort during page unload */
+    }
+  }, []);
+
+  const recordSecurityViolation = useCallback(
+    async (reason: string, silent = false) => {
+      const id = attemptIdRef.current;
+      if (!id || submittedRef.current || securityFlaggingRef.current) return;
+
+      const now = Date.now();
+      if (now - lastSecurityFlagAtRef.current < 1500) return;
+      lastSecurityFlagAtRef.current = now;
+      securityFlaggingRef.current = true;
+
+      try {
+        const res = await attemptsApi.flagSecurity(id, reason);
+        securityWarningsRef.current = res.warningCount;
+        setSecurityWarnings(res.warningCount);
+
+        if (res.autoSubmitted && res.result) {
+          submittedRef.current = true;
+          setSubmitting(false);
+          if (!silent) {
+            await dialog.notify(
+              'Exam submitted',
+              'You reached the safe exam mode warning limit, so your exam was submitted automatically.'
+            );
+          }
+          openResult(res.result);
+          return;
+        }
+
+        if (!silent) {
+          await dialog.notify(
+            `Safe exam mode warning ${res.warningCount}/${MAX_SECURITY_WARNINGS}`,
+            res.warningsRemaining > 0
+              ? `Do not leave the exam page, switch tabs, or minimize the app. After ${MAX_SECURITY_WARNINGS} warnings, the exam submits automatically.`
+              : 'Warning limit reached. Your exam is being submitted.'
+          );
+        }
+      } catch {
+        // If the warning could not be recorded online, still enforce the
+        // local rule so students cannot bypass safe mode by going offline.
+        const next = securityWarningsRef.current + 1;
+        securityWarningsRef.current = next;
+        setSecurityWarnings(next);
+        if (next >= MAX_SECURITY_WARNINGS) {
+          if (!silent) {
+            await dialog.notify(
+              'Warning limit reached',
+              'Your exam is being submitted automatically.'
+            );
+          }
+          await doSubmit(true);
+        } else if (!silent) {
+          await dialog.notify(
+            `Safe exam mode warning ${next}/${MAX_SECURITY_WARNINGS}`,
+            `Do not leave the exam page, switch tabs, or minimize the app. After ${MAX_SECURITY_WARNINGS} warnings, the exam submits automatically.`
+          );
+        }
+      } finally {
+        securityFlaggingRef.current = false;
+      }
+    },
+    [dialog, doSubmit, openResult]
+  );
+
+  /* ------------------------------------------------------------ safe mode */
+  const reportViolation = useCallback(async (
+    type: 'copy' | 'paste' | 'screenshot' | 'app-background' | 'print-screen'
+  ) => {
+    const id = attemptIdRef.current;
+    if (!id || submittedRef.current) return;
+    try {
+      const report = await attemptsApi.reportViolation(id, type);
+      if (report.submitted && report.result) {
+        submittedRef.current = true;
+        setSubmitting(true);
+        openResult(report.result);
+        return;
+      }
+      await dialog.notify(
+        'Safe-mode warning',
+        `${report.message} Your exam will be submitted automatically after the third violation.`
+      );
+    } catch {
+      // Do not interrupt a student if a transient network error prevents reporting.
+    }
+  }, [dialog, openResult]);
+
+  useEffect(() => {
+    if (!exam?.settings?.safeMode || !attemptId) return;
+    const captureKey = 'safe-exam';
+    // Native builds prevent capture. The listener also records any screenshot the OS reports.
+    if (Platform.OS !== 'web') {
+      void ScreenCapture.preventScreenCaptureAsync(captureKey).catch(() => undefined);
+      const screenshotSub = ScreenCapture.addScreenshotListener(() => { void reportViolation('screenshot'); });
+      // iOS can emit both `inactive` and `background` for one minimise action.
+      // Count that transition once, then re-arm when the exam becomes active again.
+      let backgroundViolationRecorded = false;
+      const appStateSub = AppState.addEventListener('change', (state) => {
+        if (state === 'active') {
+          backgroundViolationRecorded = false;
+        } else if (!backgroundViolationRecorded) {
+          backgroundViolationRecorded = true;
+          void reportViolation('app-background');
+        }
+      });
+      return () => {
+        screenshotSub.remove();
+        appStateSub.remove();
+        void ScreenCapture.allowScreenCaptureAsync(captureKey).catch(() => undefined);
+      };
+    }
+
+    // Browsers cannot reliably observe OS screenshots. Block copying and known capture keys,
+    // and flag tab/app changes; native apps additionally use OS capture protection above.
+    const blockClipboard = (event: Event) => {
+      event.preventDefault();
+      void reportViolation(event.type === 'paste' ? 'paste' : 'copy');
+    };
+    const blockKey = (event: KeyboardEvent) => {
+      const shortcut = (event.ctrlKey || event.metaKey) && ['c', 'x', 'v', 'p'].includes(event.key.toLowerCase());
+      if (shortcut || event.key === 'PrintScreen') {
+        event.preventDefault();
+        void reportViolation(event.key === 'PrintScreen' ? 'print-screen' : event.key.toLowerCase() === 'v' ? 'paste' : 'copy');
+      }
+    };
+    const hidden = () => { if (document.hidden) void reportViolation('app-background'); };
+    document.addEventListener('copy', blockClipboard as EventListener);
+    document.addEventListener('cut', blockClipboard as EventListener);
+    document.addEventListener('paste', blockClipboard as EventListener);
+    document.addEventListener('keydown', blockKey);
+    document.addEventListener('visibilitychange', hidden);
+    return () => {
+      document.removeEventListener('copy', blockClipboard as EventListener);
+      document.removeEventListener('cut', blockClipboard as EventListener);
+      document.removeEventListener('paste', blockClipboard as EventListener);
+      document.removeEventListener('keydown', blockKey);
+      document.removeEventListener('visibilitychange', hidden);
+    };
+  }, [attemptId, exam?.settings?.safeMode, reportViolation]);
 
   /* ------------------------------------------------------------------ timer */
   useEffect(() => {
@@ -165,33 +389,122 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remaining === null, doSubmit]);
 
-  /* --------------------------------------------- block accidental back-out */
+  /* ------------------------------------------------------------ safe mode */
   useEffect(() => {
-    const confirmExit = () => {
+    if (!attemptId) return;
+
+    const flagExitAttempt = () => {
       if (submittedRef.current) return false;
-      void (async () => {
-        const leave = await dialog.confirm(
-          'Leave the exam?',
-          'Your answers are saved, but the timer keeps running.',
-          { confirmLabel: 'Leave', cancelLabel: 'Stay', destructive: true }
-        );
-        if (leave) navigation.goBack();
-      })();
+      void recordSecurityViolation('Tried to leave the exam page');
       return true;
     };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', confirmExit);
+    const sub = BackHandler.addEventListener('hardwareBackPress', flagExitAttempt);
     const unsub = navigation.addListener('beforeRemove', (e) => {
       if (submittedRef.current || e.data.action.type === 'REPLACE') return;
       e.preventDefault();
-      confirmExit();
+      flagExitAttempt();
     });
 
     return () => {
       sub.remove();
       unsub();
     };
-  }, [dialog, navigation]);
+  }, [attemptId, navigation, recordSecurityViolation]);
+
+  useEffect(() => {
+    if (!attemptId) return;
+
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'inactive' || state === 'background') {
+        void recordSecurityViolation('App was minimized or sent to the background');
+      }
+    });
+
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        void recordSecurityViolation('Browser tab was hidden');
+      }
+    };
+
+    const onWindowBlur = () => {
+      void recordSecurityViolation('Browser window lost focus');
+    };
+
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (submittedRef.current) return;
+
+      const now = Date.now();
+      if (now - lastSecurityFlagAtRef.current >= 1500) {
+        lastSecurityFlagAtRef.current = now;
+        const next = securityWarningsRef.current + 1;
+        securityWarningsRef.current = next;
+        setSecurityWarnings(next);
+        sendSecurityFlagKeepAlive('Page reload or close attempted');
+        if (next >= MAX_SECURITY_WARNINGS) {
+          setTimeout(() => void doSubmit(true), 0);
+        }
+      }
+
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('blur', onWindowBlur);
+      window.addEventListener('beforeunload', onBeforeUnload);
+    }
+
+    return () => {
+      appStateSub.remove();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('blur', onWindowBlur);
+        window.removeEventListener('beforeunload', onBeforeUnload);
+      }
+    };
+  }, [attemptId, doSubmit, recordSecurityViolation, sendSecurityFlagKeepAlive]);
+
+  // Prevent native screenshots/recording while the exam screen is open and
+  // block browser copy/paste, contextual menus, and common capture shortcuts.
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      void preventScreenCaptureAsync('safe-exam').catch(() => undefined);
+      void enableAppSwitcherProtectionAsync(1).catch(() => undefined);
+      return () => { void allowScreenCaptureAsync('safe-exam').catch(() => undefined); };
+    }
+
+    const restricted = (event: Event) => {
+      event.preventDefault();
+      void recordSecurityViolation('Copying, pasting, or selecting exam content is not allowed');
+    };
+    const keydown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (event.key === 'PrintScreen' || ((event.ctrlKey || event.metaKey) && ['c', 'x', 'v', 'p', 's', 'u'].includes(key))) {
+        event.preventDefault();
+        void recordSecurityViolation('A restricted keyboard shortcut was used');
+      }
+    };
+    document.addEventListener('copy', restricted);
+    document.addEventListener('cut', restricted);
+    document.addEventListener('paste', restricted);
+    document.addEventListener('contextmenu', restricted);
+    document.addEventListener('dragstart', restricted);
+    document.addEventListener('keydown', keydown);
+    return () => {
+      document.removeEventListener('copy', restricted);
+      document.removeEventListener('cut', restricted);
+      document.removeEventListener('paste', restricted);
+      document.removeEventListener('contextmenu', restricted);
+      document.removeEventListener('dragstart', restricted);
+      document.removeEventListener('keydown', keydown);
+    };
+  }, [recordSecurityViolation]);
 
   /* ---------------------------------------------------------- answer saving */
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -238,6 +551,64 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   );
 
   if (loading) return <Loading text="Preparing your exam…" />;
+
+  // Paid paper, entry fee not paid — the exam stays locked.
+  if (paywall) {
+    const symbol = appConfig?.currencySymbol || '₦';
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.center}>
+          <Text style={styles.errorIcon}>🔒</Text>
+          <Text style={styles.errorTitle}>This exam requires payment</Text>
+          <Text style={styles.paywallText}>
+            Pay {formatFee(paywall.amount, symbol)} to unlock and take this paper. The Start
+            button stays locked until your entry fee is paid.
+          </Text>
+
+          {!!payError && <ErrorNote message={payError} />}
+
+          {pendingRef ? (
+            <>
+              <Text style={styles.paywallText}>
+                Payment pending… complete it in the Paystack window, then confirm here.
+              </Text>
+              <Button
+                title="I've paid — confirm"
+                style={{ marginTop: spacing.md, alignSelf: 'stretch' }}
+                onPress={async () => {
+                  const paid = await verifyPayment(pendingRef);
+                  if (paid) {
+                    setPendingRef(null);
+                    await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
+                    void bootstrap();
+                  } else {
+                    await dialog.notify(
+                      'Not confirmed yet',
+                      "We couldn't find the payment yet. Check the Paystack page, then try again."
+                    );
+                  }
+                }}
+              />
+            </>
+          ) : (
+            <Button
+              title={`Pay ${formatFee(paywall.amount, symbol)} & unlock`}
+              style={{ marginTop: spacing.md, alignSelf: 'stretch' }}
+              loading={payBusy}
+              onPress={() => void payToUnlock()}
+            />
+          )}
+
+          <Button
+            title="Go back"
+            variant="ghost"
+            style={{ marginTop: spacing.md }}
+            onPress={() => navigation.goBack()}
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (loadError || slots.length === 0) {
     return (
@@ -301,6 +672,14 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
           style={[styles.progressFill, { width: `${((index + 1) / slots.length) * 100}%` }]}
         />
       </View>
+
+      {exam?.settings?.safeMode && (
+        <View style={[styles.safeModeBanner, securityWarnings > 0 && styles.safeModeBannerWarn]}>
+          <Text style={[styles.safeModeText, securityWarnings > 0 && styles.safeModeTextWarn]}>
+            🔒 Safe exam mode · Copying, screenshots, or leaving the exam are recorded · Warnings {securityWarnings}/{MAX_SECURITY_WARNINGS}
+          </Text>
+        </View>
+      )}
 
       {/* Question navigator */}
       <ScrollView
@@ -427,6 +806,13 @@ const makeStyles = (colors: Colors) =>
     textAlign: 'center',
     marginTop: spacing.md,
   },
+  paywallText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 21,
+    marginTop: spacing.md,
+  },
 
   header: {
     flexDirection: 'row',
@@ -452,6 +838,16 @@ const makeStyles = (colors: Colors) =>
 
   progressBar: { height: 3, backgroundColor: colors.border },
   progressFill: { height: 3, backgroundColor: colors.primary },
+  safeModeBanner: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.successLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  safeModeBannerWarn: { backgroundColor: colors.warningLight },
+  safeModeText: { fontSize: 12, fontWeight: '700', color: colors.success, textAlign: 'center' },
+  safeModeTextWarn: { color: colors.warning },
 
   navStrip: { maxHeight: 56, backgroundColor: colors.card },
   navStripInner: {

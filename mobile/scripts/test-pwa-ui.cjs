@@ -35,11 +35,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function createApp({ userAgent, online = true, withServiceWorker = true } = {}) {
   const errors = [];
+  const ignorableError = (msg) => /not wrapped in act|ResizeObserver|navigation to another Document/i.test(msg);
   const vc = new VirtualConsole();
-  vc.on('jsdomError', (e) => errors.push(String(e.message || e)));
+  vc.on('jsdomError', (e) => {
+    const msg = String(e.message || e);
+    if (!ignorableError(msg)) errors.push(msg);
+  });
   vc.on('error', (...a) => {
     const s = a.join(' ');
-    if (!/not wrapped in act|ResizeObserver/.test(s)) errors.push(s);
+    if (!ignorableError(s)) errors.push(s);
   });
 
   const html = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
@@ -82,7 +86,6 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
   // A controlled registration, so "update available" is distinguishable from
   // a first install.
   const swListeners = {};
-  const controllerListeners = {};
   const registration = {
     waiting: null,
     installing: null,
@@ -91,20 +94,25 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
     },
     _emit: (t) => (swListeners[t] || []).forEach((fn) => fn()),
   };
-  const serviceWorkerContainer = {
-    controller: {},
-    ready: Promise.resolve(registration),
-    register: () => Promise.resolve(registration),
-    addEventListener: (t, fn) => {
-      (controllerListeners[t] ||= []).push(fn);
-    },
-    removeEventListener: () => {},
-    _listenerCount: (t) => (controllerListeners[t] || []).length,
-  };
+  let serviceWorker = null;
   if (withServiceWorker) {
+    const controllerListeners = {};
+    serviceWorker = {
+      controller: {},
+      ready: Promise.resolve(registration),
+      register: () => Promise.resolve(registration),
+      addEventListener: (t, fn) => {
+        (controllerListeners[t] ||= []).push(fn);
+      },
+      removeEventListener: (t, fn) => {
+        controllerListeners[t] = (controllerListeners[t] || []).filter((cb) => cb !== fn);
+      },
+      _emit: (t) => (controllerListeners[t] || []).slice().forEach((fn) => fn()),
+      _listenerCount: (t) => (controllerListeners[t] || []).length,
+    };
     Object.defineProperty(window.navigator, 'serviceWorker', {
       configurable: true,
-      value: serviceWorkerContainer,
+      value: serviceWorker,
     });
   }
 
@@ -127,7 +135,7 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
     doc,
     errors,
     registration,
-    serviceWorkerContainer,
+    serviceWorker,
     text,
     async waitForText(re, timeout = 15000) {
       const end = Date.now() + timeout;
@@ -285,15 +293,15 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
 
       // Simulate a newly installed worker while one is already controlling.
       const listeners = [];
-      let message = null;
-      let listenerWasReadyWhenMessaged = false;
+      let skipWaitingCalled = false;
+      let armedBeforeSkipWaiting = false;
       app.registration.installing = {
         state: 'installed',
         addEventListener: (t, fn) => listeners.push(fn),
-        postMessage: (value) => {
-          message = value;
-          listenerWasReadyWhenMessaged =
-            app.serviceWorkerContainer._listenerCount('controllerchange') > 0;
+        postMessage: (msg) => {
+          skipWaitingCalled = msg === 'SKIP_WAITING';
+          armedBeforeSkipWaiting = app.serviceWorker._listenerCount('controllerchange') > 0;
+          app.serviceWorker._emit('controllerchange');
         },
       };
       app.registration._emit('updatefound');
@@ -304,9 +312,9 @@ function createApp({ userAgent, online = true, withServiceWorker = true } = {}) 
       check('update banner appears', notice, app.text().slice(0, 90));
       check('offers a Refresh action', /Refresh/.test(app.text()));
       app.click('Refresh');
-      await sleep(100);
-      check('Refresh tells the waiting worker to activate', message === 'SKIP_WAITING', String(message));
-      check('reload listener is attached before activation starts', listenerWasReadyWhenMessaged);
+      await sleep(300);
+      check('Refresh asks the waiting worker to activate', skipWaitingCalled);
+      check('Refresh arms the reload listener before activating the worker', armedBeforeSkipWaiting);
       check('no runtime errors', app.errors.length === 0, app.errors.slice(0, 2).join(' | '));
       app.close();
     }

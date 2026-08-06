@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -9,7 +9,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorNote, Field, Loading } from '../../components/ui';
-import { examsApi, questionsApi } from '../../api/endpoints';
+import { configApi, examsApi, questionsApi } from '../../api/endpoints';
+import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
 import { difficultyColor, radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
@@ -19,12 +20,14 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ExamBuilder'>;
+type BankSource = 'active' | 'myPast' | 'allPast';
 
 export default function ExamBuilderScreen({ route, navigation }: Props) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const examId = route.params?.examId;
   const isEdit = !!examId;
+  const { isAdmin } = useAuth();
   const dialog = useDialog();
 
   const [title, setTitle] = useState('');
@@ -35,11 +38,26 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   const [maxAttempts, setMaxAttempts] = useState('1');
   const [shuffle, setShuffle] = useState(false);
   const [showResults, setShowResults] = useState(true);
+  // Answer review is enabled by default; the toggle turns it off (or on).
+  const [allowReview, setAllowReview] = useState(true);
   const [publish, setPublish] = useState(false);
+  const [safeMode, setSafeMode] = useState(false);
+
+  // Monetisation. Teacher exams: free to take, teacher-set review fee.
+  // Past papers (admin only): platform entry fee + review fee.
+  const [pastMode, setPastMode] = useState(route.params?.source === 'past');
+  const [year, setYear] = useState('');
+  const [entryFee, setEntryFee] = useState('');
+  const [reviewFee, setReviewFee] = useState('');
+  const [currencySymbol, setCurrencySymbol] = useState('₦');
 
   const [bank, setBank] = useState<Question[]>([]);
+  const [bankSource, setBankSource] = useState<BankSource>('active');
+  const [bankLoading, setBankLoading] = useState(false);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [search, setSearch] = useState('');
+  const [subjectFilter, setSubjectFilter] = useState<string>('all');
+  const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -49,13 +67,34 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     navigation.setOptions({ title: isEdit ? 'Edit exam' : 'New exam' });
   }, [isEdit, navigation]);
 
+  const loadBank = useCallback(async (source: BankSource) => {
+    setBankLoading(true);
+    try {
+      let res: { questions: Question[] };
+      if (source === 'active') {
+        res = await questionsApi.list();
+      } else if (source === 'myPast') {
+        res = await questionsApi.listPast();
+      } else {
+        res = await questionsApi.listPastQuestionsPool({});
+      }
+      setBank(res.questions);
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Could not load question bank.');
+    } finally {
+      setBankLoading(false);
+    }
+  }, [dialog]);
+
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const qs = await questionsApi.list();
-        if (!cancelled) setBank(qs.questions);
+        await loadBank(bankSource);
+
+        const cfg = await configApi.get();
+        if (!cancelled) setCurrencySymbol(cfg.currencySymbol || '₦');
 
         if (examId) {
           const exam = await examsApi.forEdit(examId);
@@ -68,7 +107,14 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
           setMaxAttempts(String(exam.settings?.maxAttempts ?? 1));
           setShuffle(!!exam.settings?.shuffleQuestions);
           setShowResults(exam.settings?.showResults !== false);
+          setAllowReview(exam.settings?.allowReview !== false);
           setPublish(!!exam.settings?.isPublished);
+          setSafeMode(!!exam.settings?.safeMode);
+
+          if (exam.source === 'past') setPastMode(true);
+          if (exam.year) setYear(String(exam.year));
+          if (exam.pricing?.entryFee) setEntryFee(String(exam.pricing.entryFee));
+          setReviewFee(String(exam.pricing?.reviewFee ?? ''));
 
           const picked: Record<string, number> = {};
           (exam.questions || []).forEach((q) => {
@@ -76,6 +122,15 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             if (id) picked[id] = q.points || 1;
           });
           setSelected(picked);
+        } else {
+          // Prefill the platform's default fees
+          const cfg2 = await configApi.get().catch(() => null as any);
+          if (cfg2) {
+            setReviewFee(String(cfg2.defaultReviewFee ?? 500));
+            if (route.params?.source === 'past') {
+              setEntryFee(String(cfg2.defaultEntryFee ?? 300));
+            }
+          }
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load data.');
@@ -89,15 +144,115 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     };
   }, [examId]);
 
+  useEffect(() => {
+    void loadBank(bankSource);
+  }, [bankSource, loadBank]);
+
+  const subjects = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const q of bank) {
+      const s = (q.subject || '').trim();
+      if (!s) continue;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ name, count }));
+  }, [bank]);
+
+  const effectiveSubject =
+    subjectFilter === 'all' || subjects.some((s) => s.name === subjectFilter)
+      ? subjectFilter
+      : 'all';
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return bank;
-    return bank.filter(
-      (q) =>
+    return bank.filter((q) => {
+      const matchesTerm =
+        !term ||
         q.questionText.toLowerCase().includes(term) ||
-        (q.subject || '').toLowerCase().includes(term)
-    );
-  }, [bank, search]);
+        (q.subject || '').toLowerCase().includes(term);
+      const matchesSubject =
+        effectiveSubject === 'all' || (q.subject || '').trim() === effectiveSubject;
+      const matchesDifficulty =
+        difficultyFilter === 'all' || q.difficulty === difficultyFilter;
+      return matchesTerm && matchesSubject && matchesDifficulty;
+    });
+  }, [bank, search, effectiveSubject, difficultyFilter]);
+
+  const isSubjectFullySelected = useCallback(
+    (subjName: string) => {
+      const subjQuestions = bank.filter((q) => (q.subject || '').trim() === subjName);
+      if (subjQuestions.length === 0) return false;
+      return subjQuestions.every((q) => selected[q._id] !== undefined);
+    },
+    [bank, selected]
+  );
+
+  const getSubjectSelectedCount = useCallback(
+    (subjName: string) => {
+      return bank
+        .filter((q) => (q.subject || '').trim() === subjName)
+        .reduce((count, q) => count + (selected[q._id] !== undefined ? 1 : 0), 0);
+    },
+    [bank, selected]
+  );
+
+  const selectBySubject = useCallback(
+    (subjName: string) => {
+      setSelected((prev) => {
+        const next = { ...prev };
+        bank.forEach((q) => {
+          if ((q.subject || '').trim() === subjName) {
+            next[q._id] = q.points || 1;
+          }
+        });
+        return next;
+      });
+    },
+    [bank]
+  );
+
+  const deselectBySubject = useCallback(
+    (subjName: string) => {
+      setSelected((prev) => {
+        const next = { ...prev };
+        bank.forEach((q) => {
+          if ((q.subject || '').trim() === subjName) {
+            delete next[q._id];
+          }
+        });
+        return next;
+      });
+    },
+    [bank]
+  );
+
+  const selectAllFiltered = useCallback(() => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      filtered.forEach((q) => {
+        next[q._id] = q.points || 1;
+      });
+      return next;
+    });
+  }, [filtered]);
+
+  const deselectAllFiltered = useCallback(() => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      filtered.forEach((q) => {
+        delete next[q._id];
+      });
+      return next;
+    });
+  }, [filtered]);
+
+  const getSubjectButtonLabel = (name: string, total: number, selectedCount: number) => {
+    if (selectedCount === 0) return `+ Select all ${name} (${total})`;
+    if (selectedCount === total) return `✓ ${name} (${total}/${total})`;
+    return `+ Select all ${name} (${selectedCount}/${total})`;
+  };
 
   const selectedIds = Object.keys(selected);
   const totalMarks = selectedIds.reduce((sum, id) => sum + (selected[id] || 1), 0);
@@ -111,6 +266,11 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     });
   };
 
+  const updatePoints = (id: string, pts: string) => {
+    const n = Math.max(1, parseInt(pts) || 1);
+    setSelected((prev) => ({ ...prev, [id]: n }));
+  };
+
   const save = async () => {
     if (!title.trim()) {
       setError('Give the exam a title.');
@@ -121,7 +281,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
       return;
     }
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       title: title.trim(),
       description: description.trim(),
       subject: subject.trim(),
@@ -136,9 +296,29 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
         maxAttempts: parseInt(maxAttempts, 10) || 1,
         shuffleQuestions: shuffle,
         showResults,
+        allowReview,
         isPublished: publish,
+        safeMode,
       },
     };
+
+    if (pastMode) {
+      if (!isAdmin) {
+        setError('Only admins can create past-question papers.');
+        return;
+      }
+      payload.source = 'past';
+      if (year.trim()) payload.year = parseInt(year, 10) || undefined;
+      payload.pricing = {
+        entryFee: parseInt(entryFee, 10) || 0,
+        reviewFee: parseInt(reviewFee, 10) || 0,
+      };
+    } else {
+      payload.pricing = {
+        // Teacher exams are always free to take; only the review is charged.
+        reviewFee: parseInt(reviewFee, 10) || 0,
+      };
+    }
 
     setSaving(true);
     setError(null);
@@ -219,7 +399,91 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             value={showResults}
             onChange={setShowResults}
           />
+          <Toggle
+            label="Safe exam mode (block/flag copy, screenshots and leaving app)"
+            value={safeMode}
+            onChange={setSafeMode}
+          />
+          <Text style={styles.settingHelp}>Three recorded violations automatically submit the attempt.</Text>
+          <Toggle
+            label="Allow students to review answers"
+            value={allowReview}
+            onChange={setAllowReview}
+          />
+          <Text style={styles.settingHint}>
+            Reviews show students the correct answer and any explanation you entered after they
+            finish. A paid review fee can be set below.
+          </Text>
           <Toggle label="Publish immediately" value={publish} onChange={setPublish} />
+        </Card>
+
+        {isAdmin && !isEdit && (
+          <Card>
+            <Text style={styles.section}>Exam type</Text>
+            <View style={styles.typeRow}>
+              <Pressable
+                onPress={() => setPastMode(false)}
+                style={[styles.typeOption, !pastMode && styles.typeOptionActive]}
+              >
+                <Text style={[styles.typeText, !pastMode && styles.typeTextActive]}>
+                  📝 Teacher exam
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setPastMode(true)}
+                style={[styles.typeOption, pastMode && styles.typeOptionActive]}
+              >
+                <Text style={[styles.typeText, pastMode && styles.typeTextActive]}>
+                  📚 Past questions
+                </Text>
+              </Pressable>
+            </View>
+            <Text style={styles.settingHint}>
+              {pastMode
+                ? 'Platform-owned paper sold to students (entry + review fees).'
+                : 'Teacher-set exam shared by access code — always free to take.'}
+            </Text>
+          </Card>
+        )}
+
+        <Card>
+          <Text style={styles.section}>
+            {pastMode ? 'Pricing (past paper)' : 'Review fee'}
+          </Text>
+
+          {pastMode && (
+            <View style={styles.settingsRow}>
+              <Field
+                label="Year"
+                value={year}
+                onChangeText={setYear}
+                keyboardType="number-pad"
+                placeholder="2022"
+                style={{ textAlign: 'center' }}
+              />
+              <Field
+                label={`Entry fee (${currencySymbol})`}
+                value={entryFee}
+                onChangeText={setEntryFee}
+                keyboardType="number-pad"
+                placeholder="300"
+                style={{ textAlign: 'center' }}
+              />
+            </View>
+          )}
+
+          <Field
+            label={`Answer review fee (${currencySymbol})`}
+            value={reviewFee}
+            onChangeText={setReviewFee}
+            keyboardType="number-pad"
+            placeholder="500"
+            hint={
+              pastMode
+                ? 'Students pay this once, after submitting, to open the answer review.'
+                : 'Students take this exam for free, but pay this fee to open the answer review after submitting. Set 0 for free review.'
+            }
+          />
         </Card>
 
         <Card>
@@ -230,32 +494,188 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
             </Text>
           </View>
 
+          <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: spacing.md }}>Tap to add/remove · Use Past Qs to reuse archived questions (question-level) + Past Papers are monetised exam-level</Text>
+
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+            <Pressable onPress={() => setBankSource('active')} style={[styles.sourceBtn, bankSource === 'active' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'active' && styles.sourceTextActive]}>📝 My Bank</Text>
+            </Pressable>
+            <Pressable onPress={() => setBankSource('myPast')} style={[styles.sourceBtn, bankSource === 'myPast' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'myPast' && styles.sourceTextActive]}>📚 My Past</Text>
+            </Pressable>
+            <Pressable onPress={() => setBankSource('allPast')} style={[styles.sourceBtn, bankSource === 'allPast' && styles.sourceBtnActive]}>
+              <Text style={[styles.sourceText, bankSource === 'allPast' && styles.sourceTextActive]}>🌐 All Past</Text>
+            </Pressable>
+          </View>
+
+          {bankSource !== 'active' && (
+            <View style={{ backgroundColor: colors.warningLight, borderRadius: 8, padding: 8, marginBottom: spacing.md, borderLeftWidth: 3, borderLeftColor: colors.warning }}>
+              <Text style={{ fontSize: 12, color: colors.text, lineHeight: 16 }}>
+                {bankSource === 'myPast'
+                  ? 'Showing your archived past questions (question-level). You can reuse them in new exams.'
+                  : 'Showing all teachers’ past questions pool (question-level). Great for assembling revision exams.'}
+              </Text>
+            </View>
+          )}
+
           <Field
             value={search}
             onChangeText={setSearch}
-            placeholder="Search your question bank…"
+            placeholder={bankSource === 'active' ? 'Search your bank…' : 'Search past questions…'}
+            style={{ marginBottom: spacing.sm }}
           />
 
-          {bank.length === 0 ? (
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+            {['all', 'easy', 'medium', 'hard'].map((d) => (
+              <Pressable key={d} onPress={() => setDifficultyFilter(d)} style={[styles.chip, difficultyFilter === d && styles.chipActive]}>
+                <Text style={[styles.chipText, difficultyFilter === d && styles.chipTextActive]}>{d}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {bankLoading && <Text style={styles.emptyBank}>Loading {bankSource === 'active' ? 'bank' : 'past questions'}…</Text>}
+
+          {subjects.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.subjectRow}
+            >
+              <Pressable
+                onPress={() => setSubjectFilter('all')}
+                style={[styles.chip, effectiveSubject === 'all' && styles.chipActive]}
+              >
+                <Text
+                  style={[styles.chipText, effectiveSubject === 'all' && styles.chipTextActive]}
+                >
+                  All subjects ({bank.length})
+                </Text>
+              </Pressable>
+              {subjects.map((s) => {
+                const active = effectiveSubject === s.name;
+                return (
+                  <Pressable
+                    key={s.name}
+                    onPress={() => setSubjectFilter(s.name)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {s.name} ({s.count})
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
+
+          {bank.length > 0 && (
+            <View style={styles.selectionToolbar}>
+              {subjects.length > 0 && (
+                <View style={styles.subjectSelectWrap}>
+                  <Text style={styles.subjectSelectLabel}>Select all by subject:</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.subjectActionScroll}
+                  >
+                    {subjects.map((s) => {
+                      const allSelected = isSubjectFullySelected(s.name);
+                      const selectedCount = getSubjectSelectedCount(s.name);
+                      return (
+                        <Pressable
+                          key={s.name}
+                          onPress={() =>
+                            allSelected
+                              ? deselectBySubject(s.name)
+                              : selectBySubject(s.name)
+                          }
+                          style={[
+                            styles.subjectActionChip,
+                            allSelected && styles.subjectActionChipActive,
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            allSelected
+                              ? `Deselect all ${s.name} questions`
+                              : `Select all ${s.name} questions`
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.subjectActionText,
+                              allSelected && styles.subjectActionTextActive,
+                            ]}
+                          >
+                            {getSubjectButtonLabel(s.name, s.count, selectedCount)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+
+              <View style={styles.bulkActionsRow}>
+                <Pressable
+                  onPress={selectAllFiltered}
+                  style={styles.bulkBtn}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.bulkBtnText}>
+                    {effectiveSubject === 'all'
+                      ? `Select all (${filtered.length})`
+                      : `Select all ${effectiveSubject} (${filtered.length})`}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={deselectAllFiltered}
+                  style={styles.bulkBtn}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.bulkBtnText}>
+                    {effectiveSubject === 'all'
+                      ? 'Deselect all'
+                      : `Deselect all ${effectiveSubject}`}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+
+          {bank.length === 0 && !bankLoading ? (
             <Text style={styles.emptyBank}>
               Your question bank is empty. Add questions from the Questions tab first.
             </Text>
-          ) : (
+          ) : filtered.length === 0 && !bankLoading ? (
+            <Text style={styles.emptyBank}>
+              No questions match your filter.
+            </Text>
+          ) : !bankLoading ? (
             filtered.map((q) => {
               const isOn = selected[q._id] !== undefined;
+              const isPast = !!(q as any).isPastQuestion;
+              const pastYear = (q as any).pastQuestionYear;
+              const pastSession = (q as any).pastQuestionSession;
               return (
                 <Pressable
                   key={q._id}
                   onPress={() => toggle(q)}
-                  style={[styles.qRow, isOn && styles.qRowOn]}
+                  style={[styles.qRow, isOn && styles.qRowOn, isPast && { borderLeftWidth: 3, borderLeftColor: colors.warning }]}
                 >
                   <View style={[styles.check, isOn && styles.checkOn]}>
                     {isOn && <Text style={styles.checkMark}>✓</Text>}
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.qText} numberOfLines={2}>
-                      {q.questionText}
-                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {isPast && (
+                        <View style={{ backgroundColor: colors.warningLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 }}>
+                          <Text style={{ fontSize: 9, fontWeight: '800', color: colors.warning }}>PAST {pastYear || ''}</Text>
+                        </View>
+                      )}
+                      <Text style={styles.qText} numberOfLines={2}>
+                        {q.questionText}
+                      </Text>
+                    </View>
                     <View style={styles.qMetaRow}>
                       <Text
                         style={[
@@ -267,12 +687,25 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
                       </Text>
                       <Text style={styles.qMeta}>· {q.points} pt</Text>
                       {!!q.subject && <Text style={styles.qMeta}>· {q.subject}</Text>}
+                      {pastSession && <Text style={styles.qMeta}>· {pastSession}</Text>}
                     </View>
+                    {isOn && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <Text style={{ fontSize: 12, color: colors.textMuted, fontWeight: '600' }}>Points:</Text>
+                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) - 1))} style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }}>
+                          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.text }}>−</Text>
+                        </Pressable>
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: colors.text, minWidth: 16, textAlign: 'center' }}>{selected[q._id]}</Text>
+                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) + 1))} style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }}>
+                          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.text }}>+</Text>
+                        </Pressable>
+                      </View>
+                    )}
                   </View>
                 </Pressable>
               );
             })
-          )}
+          ) : null}
         </Card>
 
         <Button
@@ -322,6 +755,21 @@ const makeStyles = (colors: Colors) =>
     paddingVertical: spacing.sm,
   },
   toggleLabel: { fontSize: 15, color: colors.text, flex: 1 },
+  settingHelp: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginTop: -spacing.xs, marginBottom: spacing.sm },
+  settingHint: { fontSize: 12, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.sm },
+  typeRow: { flexDirection: 'row', gap: spacing.md },
+  typeOption: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    backgroundColor: colors.bg,
+  },
+  typeOptionActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  typeText: { fontSize: 14, fontWeight: '700', color: colors.textMuted },
+  typeTextActive: { color: colors.primary },
   pickHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -357,4 +805,85 @@ const makeStyles = (colors: Colors) =>
   qMetaRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' },
   qDifficulty: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
   qMeta: { fontSize: 12, color: colors.textMuted },
+  subjectRow: { gap: spacing.sm, marginTop: spacing.xs, marginBottom: spacing.md },
+  chip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipText: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textTransform: 'capitalize',
+    fontWeight: '600',
+  },
+  chipTextActive: { color: colors.white },
+  selectionToolbar: {
+    marginBottom: spacing.md,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  subjectSelectWrap: {
+    marginBottom: spacing.md,
+  },
+  subjectSelectLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textMuted,
+    marginBottom: spacing.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  subjectActionScroll: {
+    gap: spacing.sm,
+  },
+  subjectActionChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  subjectActionChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  subjectActionText: {
+    fontSize: 13,
+    color: colors.primary,
+    fontWeight: '700',
+  },
+  subjectActionTextActive: {
+    color: colors.white,
+  },
+  bulkActionsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  bulkBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bulkBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  sourceBtn: { flex: 1, paddingVertical: 8, paddingHorizontal: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, alignItems: 'center' },
+  sourceBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  sourceText: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  sourceTextActive: { color: colors.white },
 });
