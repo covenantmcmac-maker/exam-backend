@@ -23,7 +23,7 @@ export default function ProfileScreen() {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const roleTint = useMemo(() => makeRoleTint(colors), [colors]);
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, refresh } = useAuth();
   const dialog = useDialog();
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
 
@@ -68,6 +68,7 @@ export default function ProfileScreen() {
     setPasswordError(null);
     try {
       await authApi.changePassword(currentPassword, newPassword);
+      await refresh();
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');

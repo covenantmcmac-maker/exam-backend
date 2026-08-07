@@ -3,139 +3,284 @@ const crypto = require('crypto');
 const Exam = require('../models/Exam');
 const ExamAttempt = require('../models/ExamAttempt');
 const Payment = require('../models/Payment');
-const { auth } = require('../middleware/auth');
+const { auth, optionalAuth } = require('../middleware/auth');
 const paystack = require('../services/paystack');
 const { getPricing } = require('../services/payment-access');
+const {
+  buildRegistrationPaymentRequiredPayload,
+  getRegistrationRequirement,
+  resolveRegistrationPaymentToken,
+} = require('../services/registration-access');
 
 /** Unique, Paystack-safe transaction reference. */
 function makeReference() {
   return 'MME-' + crypto.randomBytes(12).toString('hex').toUpperCase();
 }
 
-// ========================
-// INITIATE PAYMENT
-// ========================
-// Body: { examId, purpose: 'entry' | 'review', attemptId? }
-router.post('/initiate', auth, async (req, res) => {
-  try {
-    let { examId } = req.body;
-    const { purpose, attemptId } = req.body;
-
-    // Older cached app builds only send attemptId for review payments —
-    // resolve the exam from the attempt instead of rejecting them.
-    // Ownership of the attempt is still enforced below.
-    if (!examId && purpose === 'review' && attemptId) {
-      const attemptRef = await ExamAttempt.findById(attemptId).select('exam');
-      if (attemptRef) examId = attemptRef.exam;
-    }
-
-    if (!examId || !['entry', 'review'].includes(purpose)) {
-      return res.status(400).json({ message: 'examId and purpose are required' });
-    }
-
-    const exam = await Exam.findById(examId);
-    if (!exam) {
-      return res.status(404).json({ message: 'Exam not found' });
-    }
-
-    const pricing = getPricing(exam);
-    const amount = purpose === 'entry' ? pricing.entryFee : pricing.reviewFee;
-
-    if (amount <= 0) {
-      return res.status(400).json({
-        message:
-          purpose === 'entry'
-            ? 'This exam is free to take.'
-            : 'The answer review for this exam is free.'
-      });
-    }
-
-    if (purpose === 'review') {
-      if (!attemptId) {
-        return res.status(400).json({ message: 'attemptId is required for review payments' });
-      }
-      const attempt = await ExamAttempt.findOne({
-        _id: attemptId,
-        student: req.user._id,
-        status: { $ne: 'in-progress' }
-      });
-      if (!attempt) {
-        return res.status(404).json({ message: 'Completed attempt not found' });
-      }
-    }
-
-    // Idempotency: reuse an existing pending payment instead of charging twice.
-    const existing = await Payment.findOne({
-      student: req.user._id,
-      exam: examId,
+function makeMetadata({ purpose, exam, attemptId, user }) {
+  if (purpose === 'registration') {
+    return {
       purpose,
-      attempt: purpose === 'review' ? attemptId : null,
-      status: 'pending'
-    }).sort({ createdAt: -1 });
-
-    if (existing) {
-      return res.json({
-        message: 'Payment already initiated',
-        payment: existing,
-        devMode: paystack.isDevMode()
-      });
-    }
-
-    const alreadyPaid = await Payment.findOne({
-      student: req.user._id,
-      exam: examId,
-      purpose,
-      attempt: purpose === 'review' ? attemptId : null,
-      status: 'paid'
-    });
-    if (alreadyPaid) {
-      return res.json({
-        message: 'Already paid',
-        payment: alreadyPaid,
-        devMode: paystack.isDevMode()
-      });
-    }
-
-    const reference = makeReference();
-    const metadata = {
-      purpose,
-      examId,
-      attemptId: purpose === 'review' ? attemptId : null,
-      studentId: String(req.user._id),
+      studentId: String(user._id),
       custom_fields: [
         {
           display_name: 'Student',
           variable_name: 'student',
-          value: req.user.name || req.user.email
+          value: user.name || user.email,
         },
         {
           display_name: 'Item',
           variable_name: 'item',
-          value: `${purpose === 'entry' ? 'Entry' : 'Answer review'} — ${exam.title}`
-        }
-      ]
+          value: 'Student registration fee',
+        },
+      ],
     };
+  }
 
+  return {
+    purpose,
+    examId: exam?._id,
+    attemptId: purpose === 'review' ? attemptId : null,
+    studentId: String(user._id),
+    custom_fields: [
+      {
+        display_name: 'Student',
+        variable_name: 'student',
+        value: user.name || user.email,
+      },
+      {
+        display_name: 'Item',
+        variable_name: 'item',
+        value: `${purpose === 'entry' ? 'Entry' : 'Answer review'} — ${exam?.title || 'Exam'}`,
+      },
+    ],
+  };
+}
+
+async function resolvePaymentUser(req, purpose, paymentToken) {
+  if (purpose === 'registration') {
+    if (req.user) return req.user;
+    return resolveRegistrationPaymentToken(paymentToken);
+  }
+  return req.user || null;
+}
+
+async function refreshPendingGateway(payment, { user, amount, metadata }) {
+  if (paystack.isDevMode()) {
+    return {
+      devMode: true,
+      authorizationUrl: null,
+      accessCode: null,
+      reference: payment.reference,
+    };
+  }
+
+  try {
     const gateway = await paystack.initialize({
-      email: req.user.email,
+      email: user.email,
+      amount,
+      reference: payment.reference,
+      metadata,
+    });
+
+    payment.provider = gateway.devMode ? 'sandbox' : 'paystack';
+    payment.providerDetails = {
+      ...(payment.providerDetails || {}),
+      accessCode: gateway.accessCode || payment.providerDetails?.accessCode || null,
+      authorizationUrl:
+        gateway.authorizationUrl || payment.providerDetails?.authorizationUrl || null,
+      refreshedAt: new Date(),
+    };
+    await payment.save();
+    return gateway;
+  } catch (error) {
+    if (payment.providerDetails?.authorizationUrl) {
+      return {
+        devMode: false,
+        authorizationUrl: payment.providerDetails.authorizationUrl,
+        accessCode: payment.providerDetails.accessCode || null,
+        reference: payment.reference,
+      };
+    }
+    throw error;
+  }
+}
+
+async function findExamForPayment(examId, purpose, attemptId, user) {
+  let resolvedExamId = examId;
+
+  if (!resolvedExamId && purpose === 'review' && attemptId) {
+    const attemptRef = await ExamAttempt.findById(attemptId).select('exam');
+    if (attemptRef) resolvedExamId = attemptRef.exam;
+  }
+
+  if (!resolvedExamId || !['entry', 'review'].includes(purpose)) {
+    return { error: { status: 400, message: 'examId and purpose are required' } };
+  }
+
+  const exam = await Exam.findById(resolvedExamId);
+  if (!exam) {
+    return { error: { status: 404, message: 'Exam not found' } };
+  }
+
+  if (purpose === 'review') {
+    if (!attemptId) {
+      return { error: { status: 400, message: 'attemptId is required for review payments' } };
+    }
+
+    const attempt = await ExamAttempt.findOne({
+      _id: attemptId,
+      student: user._id,
+      status: { $ne: 'in-progress' },
+    });
+    if (!attempt) {
+      return { error: { status: 404, message: 'Completed attempt not found' } };
+    }
+  }
+
+  return { exam, examId: resolvedExamId };
+}
+
+// ========================
+// INITIATE PAYMENT
+// ========================
+// Body: { examId?, purpose: 'entry' | 'review' | 'registration', attemptId?, paymentToken? }
+router.post('/initiate', optionalAuth, async (req, res) => {
+  try {
+    let { examId } = req.body;
+    const { purpose, attemptId, paymentToken } = req.body;
+    const user = await resolvePaymentUser(req, purpose, paymentToken);
+
+    if (!user) {
+      return res.status(401).json({ message: 'Please sign in to start this payment.' });
+    }
+
+    let exam = null;
+    let amount = 0;
+    let currency = paystack.currency();
+
+    if (purpose === 'registration') {
+      const requirement = await getRegistrationRequirement(user);
+      if (!requirement.required) {
+        return res.status(200).json({
+          message: 'Registration already unlocked',
+          payment: {
+            _id: null,
+            student: user._id,
+            exam: null,
+            attempt: null,
+            purpose: 'registration',
+            amount: requirement.amount,
+            currency: requirement.currency,
+            provider: paystack.isDevMode() ? 'sandbox' : 'paystack',
+            reference: null,
+            status: 'paid',
+          },
+          authorizationUrl: null,
+          devMode: paystack.isDevMode(),
+        });
+      }
+      amount = requirement.amount;
+      currency = requirement.currency;
+    } else {
+      const examResult = await findExamForPayment(examId, purpose, attemptId, user);
+      if (examResult.error) {
+        return res.status(examResult.error.status).json({ message: examResult.error.message });
+      }
+      exam = examResult.exam;
+      examId = examResult.examId;
+      const pricing = getPricing(exam);
+      amount = purpose === 'entry' ? pricing.entryFee : pricing.reviewFee;
+      currency = pricing.currency;
+
+      if (amount <= 0) {
+        return res.status(400).json({
+          message:
+            purpose === 'entry'
+              ? 'This exam is free to take.'
+              : 'The answer review for this exam is free.'
+        });
+      }
+    }
+
+    const pendingFilter = purpose === 'registration'
+      ? {
+          student: user._id,
+          purpose,
+          status: 'pending',
+        }
+      : {
+          student: user._id,
+          exam: examId,
+          purpose,
+          attempt: purpose === 'review' ? attemptId : null,
+          status: 'pending',
+        };
+
+    const existing = await Payment.findOne(pendingFilter).sort({ createdAt: -1 });
+    const metadata = makeMetadata({ purpose, exam, attemptId, user });
+
+    if (existing) {
+      const gateway = await refreshPendingGateway(existing, {
+        user,
+        amount: existing.amount,
+        metadata,
+      });
+
+      return res.json({
+        message: 'Payment already initiated',
+        payment: existing,
+        authorizationUrl:
+          gateway.authorizationUrl || existing.providerDetails?.authorizationUrl || null,
+        devMode: gateway.devMode,
+      });
+    }
+
+    const paidFilter = purpose === 'registration'
+      ? {
+          student: user._id,
+          purpose,
+          status: 'paid',
+        }
+      : {
+          student: user._id,
+          exam: examId,
+          purpose,
+          attempt: purpose === 'review' ? attemptId : null,
+          status: 'paid',
+        };
+
+    const alreadyPaid = await Payment.findOne(paidFilter);
+    if (alreadyPaid) {
+      return res.json({
+        message: 'Already paid',
+        payment: alreadyPaid,
+        authorizationUrl: null,
+        devMode: paystack.isDevMode(),
+      });
+    }
+
+    const reference = makeReference();
+    const gateway = await paystack.initialize({
+      email: user.email,
       amount,
       reference,
-      metadata
+      metadata,
     });
 
     const payment = new Payment({
-      student: req.user._id,
-      exam: examId,
+      student: user._id,
+      exam: purpose === 'registration' ? null : examId,
       attempt: purpose === 'review' ? attemptId : null,
       purpose,
       amount,
-      currency: pricing.currency,
+      currency,
       provider: gateway.devMode ? 'sandbox' : 'paystack',
       reference,
       providerDetails: {
         accessCode: gateway.accessCode || null,
-        authorizationUrl: gateway.authorizationUrl || null
-      }
+        authorizationUrl: gateway.authorizationUrl || null,
+      },
     });
     await payment.save();
 
@@ -145,7 +290,7 @@ router.post('/initiate', auth, async (req, res) => {
         : 'Payment initiated — complete it on Paystack',
       payment,
       authorizationUrl: gateway.authorizationUrl,
-      devMode: gateway.devMode
+      devMode: gateway.devMode,
     });
   } catch (error) {
     console.error('Initiate payment error:', error);
@@ -157,7 +302,7 @@ router.post('/initiate', auth, async (req, res) => {
 // DEV MODE: mark a pending payment as paid
 // Never active in production or when Paystack is configured.
 // ========================
-router.post('/:reference/dev-complete', auth, async (req, res) => {
+router.post('/:reference/dev-complete', optionalAuth, async (req, res) => {
   try {
     if (!paystack.isDevMode()) {
       return res.status(404).json({ message: 'Not found' });
@@ -167,7 +312,12 @@ router.post('/:reference/dev-complete', auth, async (req, res) => {
     if (!payment) {
       return res.status(404).json({ message: 'Payment not found' });
     }
-    if (payment.student.toString() !== req.user._id.toString()) {
+
+    const user = await resolvePaymentUser(req, payment.purpose, req.body.paymentToken);
+    if (!user) {
+      return res.status(401).json({ message: 'Please sign in to complete this payment.' });
+    }
+    if (payment.student.toString() !== user._id.toString()) {
       return res.status(403).json({ message: 'Not your payment' });
     }
 
@@ -175,7 +325,7 @@ router.post('/:reference/dev-complete', auth, async (req, res) => {
     payment.paidAt = new Date();
     payment.providerDetails = {
       ...(payment.providerDetails || {}),
-      devComplete: true
+      devComplete: true,
     };
     await payment.save();
 
@@ -190,13 +340,18 @@ router.post('/:reference/dev-complete', auth, async (req, res) => {
 // VERIFY PAYMENT
 // Client calls this after returning from the Paystack checkout page.
 // ========================
-router.get('/:reference/verify', auth, async (req, res) => {
+router.get('/:reference/verify', optionalAuth, async (req, res) => {
   try {
     const payment = await Payment.findOne({ reference: req.params.reference });
     if (!payment) {
       return res.status(404).json({ message: 'Payment not found' });
     }
-    if (payment.student.toString() !== req.user._id.toString()) {
+
+    const user = await resolvePaymentUser(req, payment.purpose, req.query.paymentToken || req.header('x-payment-token'));
+    if (!user) {
+      return res.status(401).json({ message: 'Please sign in to verify this payment.' });
+    }
+    if (payment.student.toString() !== user._id.toString()) {
       return res.status(403).json({ message: 'Not your payment' });
     }
 
@@ -216,7 +371,7 @@ router.get('/:reference/verify', auth, async (req, res) => {
         ...(payment.providerDetails || {}),
         transactionId: result.transactionId,
         gatewayResponse: result.gatewayResponse,
-        gatewayStatus: result.status
+        gatewayStatus: result.status,
       };
       await payment.save();
       return res.json({ payment, paid: true });
@@ -236,8 +391,6 @@ router.get('/:reference/verify', auth, async (req, res) => {
 // ========================
 router.post('/webhook/paystack', (req, res) => {
   const signature = req.header('x-paystack-signature');
-  // The raw request body is captured by express.json({ verify }) in server.js
-  // so the HMAC can be checked against exactly what Paystack sent.
   const event = paystack.verifyWebhook(
     req.rawBody || JSON.stringify(req.body || {}),
     signature
@@ -247,7 +400,6 @@ router.post('/webhook/paystack', (req, res) => {
     return res.status(401).json({ message: 'Invalid signature' });
   }
 
-  // Acknowledge immediately so Paystack does not retry forever.
   res.json({ message: 'Received' });
 
   if (event.event !== 'charge.success') return;
@@ -260,7 +412,6 @@ router.post('/webhook/paystack', (req, res) => {
     if (!payment) return;
     if (payment.status === 'paid') return;
 
-    // Guard against amount tampering: kobo → naira.
     const expectedAmount = Math.round(payment.amount * 100);
     if (data.amount !== undefined && Number(data.amount) !== expectedAmount) {
       payment.status = 'failed';
@@ -278,7 +429,7 @@ router.post('/webhook/paystack', (req, res) => {
       transactionId: data.id,
       gatewayResponse: data.gateway_response,
       gatewayStatus: data.status,
-      channel: data.channel
+      channel: data.channel,
     };
     await payment.save();
     console.log(`✅ Payment ${reference} confirmed (${payment.purpose}, ${payment.amount} ${payment.currency})`);

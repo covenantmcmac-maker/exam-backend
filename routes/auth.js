@@ -2,6 +2,30 @@ const router = require('express').Router();
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { auth } = require('../middleware/auth');
+const {
+  buildRegistrationPaymentRequiredPayload,
+  getRegistrationRequirement,
+} = require('../services/registration-access');
+const { markPasswordModified } = require('../services/account-security');
+
+function signToken(user, expiresIn = '7d') {
+  return jwt.sign(
+    { id: user._id },
+    process.env.JWT_SECRET,
+    { expiresIn }
+  );
+}
+
+function serializeUser(user) {
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    mustChangePassword: Boolean(user.mustChangePassword),
+    createdAt: user.createdAt,
+  };
+}
 
 // REGISTER
 router.post('/register', async (req, res) => {
@@ -12,29 +36,38 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'Please fill all fields' });
     }
 
-    const existingUser = await User.findOne({ email });
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ message: 'Email already registered' });
     }
 
-    const user = new User({ name, email, password, role: role || 'student' });
+    const user = new User({
+      name: String(name).trim(),
+      email: normalizedEmail,
+      password,
+      role: role || 'student',
+      mustChangePassword: false,
+    });
     await user.save();
 
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const registrationRequirement = await getRegistrationRequirement(user);
+    if (registrationRequirement.required) {
+      return res.status(402).json(
+        buildRegistrationPaymentRequiredPayload(
+          user,
+          registrationRequirement,
+          'Account created. Complete the one-time registration payment before you sign in.'
+        )
+      );
+    }
+
+    const token = signToken(user);
 
     res.status(201).json({
       message: 'Account created successfully',
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
+      user: serializeUser(user)
     });
   } catch (error) {
     console.error('Register error:', error);
@@ -51,7 +84,8 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Please enter email and password' });
     }
 
-    const user = await User.findOne({ email });
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
@@ -61,21 +95,23 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const registrationRequirement = await getRegistrationRequirement(user);
+    if (registrationRequirement.required) {
+      return res.status(402).json(
+        buildRegistrationPaymentRequiredPayload(
+          user,
+          registrationRequirement,
+          'Complete the one-time registration payment before you sign in.'
+        )
+      );
+    }
+
+    const token = signToken(user);
 
     res.json({
       message: 'Login successful',
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
+      user: serializeUser(user)
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -86,103 +122,17 @@ router.post('/login', async (req, res) => {
 // GET CURRENT USER
 router.get('/me', auth, async (req, res) => {
   try {
-    res.json({ user: req.user });
+    res.json({ user: serializeUser(req.user) });
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// GUEST REGISTER
+// GUEST REGISTER (removed)
 router.post('/guest-register', async (req, res) => {
-  try {
-    const { name, email, examCode } = req.body;
-
-    if (!name || !email) {
-      return res.status(400).json({
-        message: 'Please enter your name and email'
-      });
-    }
-
-    const Exam = require('../models/Exam');
-    const ExamAttempt = require('../models/ExamAttempt');
-
-    const exam = await Exam.findOne({
-      accessCode: examCode.toUpperCase(),
-      'settings.isPublished': true
-    });
-
-    if (!exam) {
-      return res.status(404).json({
-        message: 'Exam not found or not published'
-      });
-    }
-
-    // Paid past-question papers cannot be taken by guests — payment requires
-    // a real account. Teacher exams (free entry) remain guest-friendly.
-    const pricing = exam.pricing || {};
-    if ((Number(pricing.entryFee) || 0) > 0) {
-      return res.status(403).json({
-        message: 'This exam requires payment. Please create an account to take it.'
-      });
-    }
-
-    let user = await User.findOne({ email });
-
-    if (!user) {
-      user = new User({
-        name,
-        email,
-        password: 'guest_' + Date.now() + '_' + Math.random().toString(36),
-        role: 'student'
-      });
-      await user.save();
-    }
-
-    const existingAttempt = await ExamAttempt.findOne({
-      exam: exam._id,
-      student: user._id,
-      status: { $ne: 'in-progress' }
-    });
-
-    if (existingAttempt) {
-      return res.status(400).json({
-        message: 'This email has already been used to take this exam. Each student can only take the exam once.'
-      });
-    }
-
-    const inProgressAttempt = await ExamAttempt.findOne({
-      exam: exam._id,
-      student: user._id,
-      status: 'in-progress'
-    });
-
-    if (inProgressAttempt) {
-      return res.status(400).json({
-        message: 'You already have an exam in progress.'
-      });
-    }
-
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    res.json({
-      message: 'Joined successfully',
-      token,
-      examId: exam._id,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    console.error('Guest register error:', error);
-    res.status(500).json({ message: 'Error joining exam' });
-  }
+  res.status(410).json({
+    message: 'Guest exam joining has been removed. Please sign in or create an account first.'
+  });
 });
 
 // CHANGE PASSWORD
@@ -209,6 +159,8 @@ router.patch('/change-password', auth, async (req, res) => {
     }
 
     user.password = newPassword;
+    user.mustChangePassword = false;
+    markPasswordModified(user);
     await user.save();
 
     res.json({ message: 'Password changed successfully' });

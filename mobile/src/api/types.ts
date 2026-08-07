@@ -16,21 +16,30 @@ export interface AppConfig {
   paymentsConfigured: boolean;
   paymentsDevMode: boolean;
   paystackPublicKey: string;
+  studentRegistrationFee: number;
+  studentRegistrationFeeActive: boolean;
+  applyRegistrationFeeToExistingStudents: boolean;
 }
 
-export type PaymentPurpose = 'entry' | 'review';
+export interface AdminPlatformConfig {
+  studentRegistrationFee: number;
+  applyRegistrationFeeToExistingStudents: boolean;
+  studentRegistrationFeeActivatedAt?: string | null;
+}
+
+export type PaymentPurpose = 'entry' | 'review' | 'registration';
 export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'expired';
 
 export interface Payment {
-  _id: string;
+  _id: string | null;
   student: User | string;
-  exam: Exam | string;
+  exam: Exam | string | null;
   attempt?: ExamAttempt | string | null;
   purpose: PaymentPurpose;
   amount: number;
   currency: string;
   provider: 'paystack' | 'sandbox';
-  reference: string;
+  reference: string | null;
   status: PaymentStatus;
   paidAt?: string;
   createdAt?: string;
@@ -82,6 +91,7 @@ export interface AdminPaymentsResult {
     totalRevenue: number;
     entryCount: number;
     reviewCount: number;
+    registrationCount: number;
   };
 }
 
@@ -91,6 +101,7 @@ export interface User {
   name: string;
   email: string;
   role: Role;
+  mustChangePassword?: boolean;
   createdAt?: string;
 }
 
@@ -281,13 +292,20 @@ export interface AdminStats {
   totalQuestions: number;
   totalAttempts: number;
   completedAttempts: number;
+  registration?: {
+    studentRegistrationFee: number;
+    applyRegistrationFeeToExistingStudents: boolean;
+    studentRegistrationFeeActivatedAt?: string | null;
+  };
   payments: {
     total: number;
     entryCount: number;
     reviewCount: number;
+    registrationCount: number;
     totalRevenue: number;
     entryRevenue: number;
     reviewRevenue: number;
+    registrationRevenue: number;
     currency: string;
   };
 }

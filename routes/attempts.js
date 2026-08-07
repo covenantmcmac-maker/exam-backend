@@ -4,6 +4,7 @@ const Exam = require('../models/Exam');
 const Question = require('../models/Question');
 const { auth, authorize } = require('../middleware/auth');
 const { requireEntryPayment, requireReviewAccess } = require('../services/payment-access');
+const { requireExamAvailability, requireTeacherExamAccess } = require('../services/exam-access');
 
 const MAX_SECURITY_WARNINGS = 3;
 const MAX_SAFE_MODE_VIOLATIONS = 3;
@@ -135,6 +136,8 @@ router.post('/start', auth, async (req, res) => {
       return res.status(404).json({ message: 'Exam not found' });
     }
 
+    if (!(await requireTeacherExamAccess(req, res, exam))) return;
+
     // Paid past-question papers: no payment → no start.
     if (!(await requireEntryPayment(req, res, exam))) return;
 
@@ -147,6 +150,8 @@ router.post('/start', auth, async (req, res) => {
     if (existingAttempt) {
       return res.json({ message: 'Resuming attempt', attempt: existingAttempt });
     }
+
+    if (!(await requireExamAvailability(req, res, exam))) return;
 
     const attempt = new ExamAttempt({
       exam: examId,

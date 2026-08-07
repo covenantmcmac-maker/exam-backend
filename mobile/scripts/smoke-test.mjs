@@ -158,14 +158,33 @@ try {
   const { authApi, examsApi, attemptsApi, questionsApi, adminApi, paymentsApi, configApi } =
     await import(endpointsMod);
 
-  console.log('\nAuth');
-  const login = await authApi.login('teacher@example.com', 'secret');
-  check('login returns token + user', !!login.token && login.user.role === 'teacher');
+  console.log('\nConfig');
+  const cfg = await configApi.get();
+  check(
+    'config exposes naira + dev mode',
+    cfg.currency === 'NGN' && cfg.paymentsDevMode === true
+  );
+  check(
+    'config exposes default fees (300 entry / 500 review)',
+    cfg.defaultEntryFee === 300 && cfg.defaultReviewFee === 500
+  );
+  check(
+    'config exposes registration fee + existing-students toggle',
+    cfg.studentRegistrationFee === 1200 &&
+      cfg.studentRegistrationFeeActive === true &&
+      cfg.applyRegistrationFeeToExistingStudents === true
+  );
 
-  // Simulate what AuthContext does after a successful login.
+  console.log('\nAuth');
+  const teacherLogin = await authApi.login('teacher@example.com', 'secret');
+  check('teacher login returns token + user', !!teacherLogin.token && teacherLogin.user.role === 'teacher');
+
+  const adminLogin = await authApi.login('admin@example.com', 'secret');
+  check('admin login is never charged', !!adminLogin.token && adminLogin.user.role === 'admin');
+
   const { setToken } = await import(clientMod);
-  await setToken(login.token);
-  check('token persisted to storage', (await getToken()) === login.token);
+  await setToken(teacherLogin.token);
+  check('token persisted to storage', (await getToken()) === teacherLogin.token);
 
   const me = await authApi.me();
   check('GET /me sends bearer token', !!me.user);
@@ -178,27 +197,70 @@ try {
   }
   check('bad password surfaces ApiError(401)', rejected);
 
-  const reg = await authApi.register('New Person', 'new@example.com', 'pw1234', 'student');
-  check('register returns created user', reg.user.email === 'new@example.com');
+  let studentBlocked = null;
+  try {
+    await authApi.login('student@example.com', 'secret');
+  } catch (e) {
+    studentBlocked = e;
+  }
+  check(
+    'unpaid student login returns 402 registration paywall',
+    studentBlocked instanceof ApiError &&
+      studentBlocked.status === 402 &&
+      studentBlocked.data?.purpose === 'registration' &&
+      studentBlocked.data?.amount === 1200
+  );
+
+  const regPaymentToken = studentBlocked?.data?.paymentToken;
+  const regInit = await paymentsApi.initiate({ purpose: 'registration', paymentToken: regPaymentToken });
+  check(
+    'registration initiate returns sandbox payment',
+    regInit.devMode === true && regInit.payment.reference === 'REG-MOCK-1'
+  );
+
+  const regDone = await paymentsApi.devComplete('REG-MOCK-1', regPaymentToken);
+  check('registration dev-complete marks paid', regDone.payment.status === 'paid');
+
+  const regVerified = await paymentsApi.verify('REG-MOCK-1', regPaymentToken);
+  check('registration verify confirms the payment', regVerified.paid === true);
+
+  const studentLogin = await authApi.login('student@example.com', 'secret');
+  check('student can log in after registration payment', !!studentLogin.token && studentLogin.user.role === 'student');
+
+  const teacherRegister = await authApi.register('Teacher Two', 'teach2@example.com', 'pw1234', 'teacher');
+  check('teacher self-register is never charged', teacherRegister.user.role === 'teacher' && !!teacherRegister.token);
+
+  let studentRegisterBlocked = false;
+  try {
+    await authApi.register('New Student', 'newstudent@example.com', 'pw1234', 'student');
+  } catch (e) {
+    studentRegisterBlocked = e instanceof ApiError && e.status === 402 && e.data?.purpose === 'registration';
+  }
+  check('student register returns 402 when fee is active', studentRegisterBlocked);
 
   console.log('\nStudent flow');
-  const pub = await examsApi.joinPublic('ABCD1234');
-  check('join-public resolves exam', pub.exam.title === 'Sample Quiz');
+  await setToken(studentLogin.token);
 
-  let notFound = false;
+  let joinPublicBlocked = false;
   try {
-    await examsApi.joinPublic('NOPE');
+    await clearSession();
+    await examsApi.joinPublic('ABCD1234');
   } catch (e) {
-    notFound = e.status === 404;
+    joinPublicBlocked = e instanceof ApiError && e.status === 401;
   }
-  check('bad access code returns 404', notFound);
+  check('join-public no longer works without auth', joinPublicBlocked);
 
-  const guest = await authApi.guestRegister('Guest One', 'guest@example.com', 'ABCD1234');
-  check('guest-register returns examId', guest.examId === 'e1');
+  let guestRegisterBlocked = false;
+  try {
+    await authApi.guestRegister('Guest One', 'guest@example.com', 'ABCD1234');
+  } catch (e) {
+    guestRegisterBlocked = e instanceof ApiError && e.status === 410;
+  }
+  check('guest-register no longer auto-creates accounts', guestRegisterBlocked);
 
-  await setToken(login.token);
+  await setToken(studentLogin.token);
   const joined = await examsApi.join('ABCD1234');
-  check('authenticated join works', joined.exam._id === 'e1');
+  check('authenticated join still works with a valid access code', joined.exam._id === 'e1');
 
   const takeExam = await examsApi.take('e1');
   check('take endpoint returns questions', takeExam.questions.length === 1);
@@ -219,16 +281,6 @@ try {
   check('my-attempts returns history', Array.isArray(mine) && mine.length === 1);
 
   console.log('\\nPayments (past questions)');
-  const cfg = await configApi.get();
-  check(
-    'config exposes naira + dev mode',
-    cfg.currency === 'NGN' && cfg.paymentsDevMode === true
-  );
-  check(
-    'config exposes default fees (300 entry / 500 review)',
-    cfg.defaultEntryFee === 300 && cfg.defaultReviewFee === 500
-  );
-
   const past = await examsApi.past();
   check(
     'past library lists paid paper',
@@ -244,7 +296,7 @@ try {
   }
   check('start of unpaid past paper returns 402', locked);
 
-  const init = await paymentsApi.initiate('e2', 'entry');
+  const init = await paymentsApi.initiate({ examId: 'e2', purpose: 'entry' });
   check(
     'initiate payment returns sandbox payment',
     init.devMode === true && init.payment.reference === 'PST-MOCK-1'
@@ -272,6 +324,7 @@ try {
   check('my-payments returns history list', Array.isArray(myPayments));
 
   console.log('\nTeacher flow');
+  await setToken(teacherLogin.token);
   const myExams = await examsApi.myExams();
   check('my-exams returns list', myExams.length === 1);
 
@@ -298,18 +351,51 @@ try {
   check('bulk upload returns imported count', bulk.count === 3);
 
   console.log('\nAdmin');
+  await setToken(adminLogin.token);
   const adminStats = await adminApi.stats();
-  check('admin stats shape matches backend', adminStats.totalUsers === 3);
-  check('admin stats include revenue', typeof adminStats.payments?.totalRevenue === 'number');
+  check('admin stats shape matches backend', adminStats.totalUsers === 4);
+  check(
+    'admin stats include registration revenue/count fields',
+    typeof adminStats.payments?.registrationCount === 'number' &&
+      typeof adminStats.payments?.registrationRevenue === 'number'
+  );
+
+  const adminConfig = await adminApi.config();
+  check(
+    'admin config returns registration fee settings',
+    adminConfig.studentRegistrationFee === 1200 && adminConfig.applyRegistrationFeeToExistingStudents === true
+  );
+
+  const adminConfigSaved = await adminApi.updateConfig({
+    studentRegistrationFee: 0,
+    applyRegistrationFeeToExistingStudents: false,
+  });
+  check(
+    'admin can update registration fee and existing-students toggle',
+    adminConfigSaved.config.studentRegistrationFee === 0 &&
+      adminConfigSaved.config.applyRegistrationFeeToExistingStudents === false
+  );
 
   const adminPayments = await adminApi.payments();
   check(
-    'admin payments returns list + totals',
-    Array.isArray(adminPayments.payments) && typeof adminPayments.totals?.totalRevenue === 'number'
+    'admin payments returns list + totals with registrationCount',
+    Array.isArray(adminPayments.payments) && typeof adminPayments.totals?.registrationCount === 'number'
   );
 
   const adminUsers = await adminApi.users();
-  check('admin users returns list', adminUsers.users.length === 2);
+  check('admin users returns list', adminUsers.users.length === 4);
+
+  const singleReset = await adminApi.resetUserPassword('u_student');
+  check('admin can reset one password to 123456', singleReset.user.mustChangePassword === true);
+
+  const bulkReset = await adminApi.resetAllStudentPasswords();
+  check('admin can bulk reset all student passwords', bulkReset.resetCount === 2);
+
+  const teacherStillWorks = await authApi.login('teacher@example.com', 'secret');
+  check('bulk reset excludes teachers/admins', teacherStillWorks.user.role === 'teacher');
+
+  const studentWithDefault = await authApi.login('student@example.com', '123456');
+  check('reset student logs in with 123456 and mustChangePassword', studentWithDefault.user.mustChangePassword === true);
 
   console.log('\nSession handling');
   await clearSession();
@@ -323,7 +409,6 @@ try {
   }
   check('requests without token are rejected', unauth);
 
-  // Confirm the auth header actually reached the server on protected calls.
   const callLog = await (await fetch(`${BASE}/__calls`)).json();
   const protectedCalls = callLog.filter(
     (c) => c.key === 'GET /api/exams/my-exams' || c.key === 'POST /api/attempts/start'
