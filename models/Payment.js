@@ -1,14 +1,18 @@
 const mongoose = require('mongoose');
 
 /**
- * A payment for exam access or answer review.
+ * A payment for exam access, answer review, or the one-time student
+ * registration fee.
  *
  * Every exam can earn money twice:
- *   1. entry   — pay to sit a past-question paper (teacher exams are free)
- *   2. review  — pay to unlock the answer review after submitting
+ *   1. entry        — pay to sit a past-question paper (teacher exams are free)
+ *   2. review       — pay to unlock the answer review after submitting
  *
- * Payments are recorded here and enforced by the exam/attempt routes. The
- * actual money movement is delegated to a provider (Paystack by default),
+ * And the platform can charge once per student:
+ *   3. registration — unlock the student account permanently
+ *
+ * Payments are recorded here and enforced by the exam/attempt/auth routes.
+ * The actual money movement is delegated to a provider (Paystack by default),
  * see services/paystack.js.
  */
 const paymentSchema = new mongoose.Schema({
@@ -20,7 +24,10 @@ const paymentSchema = new mongoose.Schema({
   exam: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Exam',
-    required: true
+    default: null,
+    required() {
+      return this.purpose !== 'registration';
+    }
   },
   // Set for review payments: the review belongs to one specific attempt.
   attempt: {
@@ -30,7 +37,7 @@ const paymentSchema = new mongoose.Schema({
   },
   purpose: {
     type: String,
-    enum: ['entry', 'review'],
+    enum: ['entry', 'review', 'registration'],
     required: true
   },
   amount: {
@@ -69,10 +76,28 @@ const paymentSchema = new mongoose.Schema({
   }
 });
 
-// A student cannot be charged twice for the same thing.
+// A student cannot be charged twice for the same exam access / review.
 paymentSchema.index(
   { student: 1, exam: 1, purpose: 1, attempt: 1 },
-  { partialFilterExpression: { status: { $in: ['pending', 'paid'] } } }
+  {
+    unique: true,
+    partialFilterExpression: {
+      purpose: { $in: ['entry', 'review'] },
+      status: { $in: ['pending', 'paid'] }
+    }
+  }
+);
+
+// Registration is a one-time platform fee per student.
+paymentSchema.index(
+  { student: 1, purpose: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      purpose: 'registration',
+      status: { $in: ['pending', 'paid'] }
+    }
+  }
 );
 
 module.exports = mongoose.model('Payment', paymentSchema);

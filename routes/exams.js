@@ -4,6 +4,11 @@ const ExamAttempt = require('../models/ExamAttempt');
 const Payment = require('../models/Payment');
 const { auth, authorize } = require('../middleware/auth');
 const { requireEntryPayment, getPricing, hasPaidEntry } = require('../services/payment-access');
+const {
+  grantTeacherExamAccess,
+  requireTeacherExamAccess,
+  requireExamAvailability,
+} = require('../services/exam-access');
 const paystack = require('../services/paystack');
 const crypto = require('crypto');
 
@@ -135,47 +140,24 @@ router.post('/join', auth, async (req, res) => {
       return res.status(404).json({ message: 'Invalid access code or exam not published' });
     }
 
-    const now = new Date();
-    if (exam.settings.startDate) {
-      const startDate = new Date(exam.settings.startDate);
-      if (!isNaN(startDate.getTime()) && now < startDate) {
-        return res.status(400).json({
-          message: 'Exam has not started yet. Starts: ' + startDate.toLocaleString()
-        });
-      }
-    }
-    if (exam.settings.endDate) {
-      const endDate = new Date(exam.settings.endDate);
-      if (!isNaN(endDate.getTime()) && now > endDate) {
-        return res.status(400).json({
-          message: 'Exam has ended on: ' + endDate.toLocaleString()
-        });
-      }
-    }
+    if (!(await requireExamAvailability(req, res, exam))) return;
 
-    const attemptCount = await ExamAttempt.countDocuments({
-      exam: exam._id,
-      student: req.user._id,
-      status: { $ne: 'in-progress' }
-    });
-
-    if (attemptCount >= exam.settings.maxAttempts) {
-      return res.status(400).json({ message: 'Maximum attempts reached' });
-    }
+    await grantTeacherExamAccess(req.user._id, exam._id);
 
     res.json({ message: 'Access granted', exam });
   } catch (error) {
+    console.error('Join exam error:', error);
     res.status(500).json({ message: 'Error joining exam' });
   }
 });
 
-// PUBLIC JOIN - No auth
-router.post('/join-public', async (req, res) => {
+// PUBLIC JOIN now requires auth and behaves like /join.
+router.post('/join-public', auth, async (req, res) => {
   try {
     const { accessCode } = req.body;
 
     if (!accessCode) {
-      return res.status(400).json({ message: 'Access code required' });
+      return res.status(400).json({ message: 'Please enter access code' });
     }
 
     const exam = await Exam.findOne({
@@ -185,47 +167,17 @@ router.post('/join-public', async (req, res) => {
     }).populate('creator', 'name');
 
     if (!exam) {
-      return res.status(404).json({
-        message: 'Exam not found or not published'
-      });
+      return res.status(404).json({ message: 'Invalid access code or exam not published' });
     }
 
-    const now = new Date();
-    if (exam.settings.startDate) {
-      const startDate = new Date(exam.settings.startDate);
-      if (!isNaN(startDate.getTime()) && now < startDate) {
-        return res.status(400).json({
-          message: 'Exam has not started yet. Starts: ' + startDate.toLocaleString()
-        });
-      }
-    }
-    if (exam.settings.endDate) {
-      const endDate = new Date(exam.settings.endDate);
-      if (!isNaN(endDate.getTime()) && now > endDate) {
-        return res.status(400).json({
-          message: 'Exam has ended on: ' + endDate.toLocaleString()
-        });
-      }
-    }
+    if (!(await requireExamAvailability(req, res, exam))) return;
 
-    res.json({
-      message: 'Exam found',
-      exam: {
-        _id: exam._id,
-        title: exam.title,
-        description: exam.description,
-        subject: exam.subject,
-        creator: exam.creator,
-        settings: {
-          duration: exam.settings.duration,
-          passingMarks: exam.settings.passingMarks,
-          totalMarks: exam.settings.totalMarks
-        },
-        questions: exam.questions
-      }
-    });
+    await grantTeacherExamAccess(req.user._id, exam._id);
+
+    res.json({ message: 'Access granted', exam });
   } catch (error) {
-    res.status(500).json({ message: 'Error loading exam' });
+    console.error('Join-public exam error:', error);
+    res.status(500).json({ message: 'Error joining exam' });
   }
 });
 
@@ -494,6 +446,8 @@ router.get('/:id/take', auth, async (req, res) => {
     if (!exam) {
       return res.status(404).json({ message: 'Exam not found' });
     }
+
+    if (!(await requireTeacherExamAccess(req, res, exam))) return;
 
     // Paid papers: no entry payment → locked.
     if (!(await requireEntryPayment(req, res, exam))) return;

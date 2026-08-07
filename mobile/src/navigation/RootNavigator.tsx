@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Text } from 'react-native';
 import {
   NavigationContainer,
@@ -14,7 +14,7 @@ import { Loading } from '../components/ui';
 
 import LoginScreen from '../screens/auth/LoginScreen';
 import RegisterScreen from '../screens/auth/RegisterScreen';
-import GuestJoinScreen from '../screens/auth/GuestJoinScreen';
+import MustChangePasswordScreen from '../screens/auth/MustChangePasswordScreen';
 
 import StudentHomeScreen from '../screens/student/StudentHomeScreen';
 import PastExamPapersScreen from '../screens/student/PastQuestionsScreen';
@@ -71,7 +71,6 @@ function AuthFlow() {
     <AuthStack.Navigator screenOptions={{ headerShown: false }}>
       <AuthStack.Screen name="Login" component={LoginScreen} />
       <AuthStack.Screen name="Register" component={RegisterScreen} />
-      <AuthStack.Screen name="GuestJoin" component={GuestJoinScreen} />
     </AuthStack.Navigator>
   );
 }
@@ -140,9 +139,10 @@ function TeacherFlow() {
  */
 function PaymentRedirectHandler() {
   const dialog = useDialog();
+  const { user } = useAuth();
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.location?.search) return;
+    if (!user || typeof window === 'undefined' || !window.location?.search) return;
 
     const params = new URLSearchParams(window.location.search);
     const reference = params.get('reference') || params.get('trxref');
@@ -169,37 +169,19 @@ function PaymentRedirectHandler() {
         /* Non-fatal */
       }
     })();
-  }, [dialog]);
+  }, [dialog, user]);
 
   return null;
 }
 
 export default function RootNavigator() {
-  const { user, loading, isTeacher, pendingExamId, clearPendingExam } = useAuth();
+  const { user, loading, isTeacher } = useAuth();
   const colors = useColors();
-  const navReady = useRef(false);
-
-  const goToPendingExam = useCallback(() => {
-    if (!pendingExamId || !navReady.current || !navigationRef.isReady()) return;
-    const examId = pendingExamId;
-    clearPendingExam();
-    navigationRef.navigate('ExamTaking', { examId });
-  }, [pendingExamId, clearPendingExam]);
-
-  useEffect(() => {
-    if (user && pendingExamId) goToPendingExam();
-  }, [user, pendingExamId, goToPendingExam]);
 
   if (loading) return <Loading text="Starting up…" />;
 
   return (
-    <NavigationContainer
-      ref={navigationRef}
-      onReady={() => {
-        navReady.current = true;
-        goToPendingExam();
-      }}
-    >
+    <NavigationContainer ref={navigationRef}>
       <PaymentRedirectHandler />
       <RootStack.Navigator
         screenOptions={{
@@ -211,6 +193,12 @@ export default function RootNavigator() {
       >
         {!user ? (
           <RootStack.Screen name="Auth" component={AuthFlow} options={{ headerShown: false }} />
+        ) : user.mustChangePassword ? (
+          <RootStack.Screen
+            name="MustChangePassword"
+            component={MustChangePasswordScreen}
+            options={{ headerShown: false, gestureEnabled: false }}
+          />
         ) : (
           <>
             {isTeacher ? (

@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Badge, Button, Card, Field, Loading, StatTile } from '../../components/ui';
 import { adminApi, AdminPastStats } from '../../api/endpoints';
+import { formatFee } from '../../utils/payments';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
 import type { NavigationProp } from '@react-navigation/native';
@@ -19,6 +20,7 @@ import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
 import type {
+  AdminPlatformConfig,
   AdminStats,
   Exam,
   ExamAttempt,
@@ -54,6 +56,9 @@ export default function AdminPanelScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('overview');
   const [stats, setStats] = useState<(AdminStats & any) | null>(null);
+  const [platformConfig, setPlatformConfig] = useState<AdminPlatformConfig | null>(null);
+  const [registrationFeeInput, setRegistrationFeeInput] = useState('0');
+  const [configBusy, setConfigBusy] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
@@ -62,10 +67,12 @@ export default function AdminPanelScreen() {
     totalRevenue: 0,
     entryCount: 0,
     reviewCount: 0,
+    registrationCount: 0,
   });
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
 
   // Past Qs admin state
   const [pastQuestions, setPastQuestions] = useState<Question[]>([]);
@@ -78,14 +85,17 @@ export default function AdminPanelScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [s, u, e, a, p] = await Promise.all([
+      const [s, cfg, u, e, a, p] = await Promise.all([
         adminApi.stats(),
+        adminApi.config(),
         adminApi.users(),
         adminApi.exams(),
         adminApi.attempts(),
         adminApi.payments(),
       ]);
       setStats(s);
+      setPlatformConfig(cfg);
+      setRegistrationFeeInput(String(cfg.studentRegistrationFee ?? 0));
       setUsers(u.users);
       setExams(e);
       setAttempts(a);
@@ -204,6 +214,73 @@ export default function AdminPanelScreen() {
     }
   };
 
+  const saveRegistrationConfig = async (updates: Partial<AdminPlatformConfig>) => {
+    setConfigBusy(true);
+    try {
+      const res = await adminApi.updateConfig(updates);
+      setPlatformConfig(res.config);
+      setRegistrationFeeInput(String(res.config.studentRegistrationFee ?? 0));
+      setStats((prev: (AdminStats & any) | null) =>
+        prev
+          ? {
+              ...prev,
+              registration: res.config,
+            }
+          : prev
+      );
+      await dialog.notify('Saved', res.message);
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Could not save configuration.');
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
+  const resetUserPassword = async (u: User) => {
+    const id = u._id || u.id;
+    if (!id) return;
+    const ok = await dialog.confirm(
+      'Reset password?',
+      `Reset ${u.name}'s password to 123456? They will be required to change it on next sign-in.`,
+      { confirmLabel: 'Reset', destructive: true }
+    );
+    if (!ok) return;
+    try {
+      const res = await adminApi.resetUserPassword(id);
+      setUsers((prev) =>
+        prev.map((x) =>
+          (x._id || x.id) === id ? { ...x, mustChangePassword: true } : x
+        )
+      );
+      await dialog.notify('Password reset', res.message);
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Reset failed.');
+    }
+  };
+
+  const resetAllStudentPasswords = async () => {
+    const totalStudents = stats?.totalStudents ?? users.filter((u) => u.role === 'student').length;
+    const ok = await dialog.confirm(
+      'Reset all student passwords?',
+      `This will reset ${totalStudents} student accounts to 123456. Are you sure?`,
+      { confirmLabel: 'Reset all', destructive: true }
+    );
+    if (!ok) return;
+
+    setResetBusy(true);
+    try {
+      const res = await adminApi.resetAllStudentPasswords();
+      setUsers((prev) =>
+        prev.map((u) => (u.role === 'student' ? { ...u, mustChangePassword: true } : u))
+      );
+      await dialog.notify('Student passwords reset', res.message);
+    } catch (e) {
+      void dialog.notify('Error', e instanceof Error ? e.message : 'Bulk reset failed.');
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   // Past admin actions
   const pastSelectedIds = Object.keys(pastSelected);
 
@@ -272,8 +349,6 @@ export default function AdminPanelScreen() {
     }
   };
 
-  if (loading) return <Loading text="Loading admin data…" />;
-
   const term = search.trim().toLowerCase();
   const visibleUsers = term
     ? users.filter((u) => u.name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term))
@@ -309,6 +384,8 @@ export default function AdminPanelScreen() {
       return matchSubject && matchYear;
     });
   }, [pastQuestions, pastSubject, pastYear]);
+
+  if (loading) return <Loading text="Loading admin data…" />;
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
@@ -389,12 +466,106 @@ export default function AdminPanelScreen() {
               <StatTile label="Entry fees" value={(stats as any)?.payments?.entryCount ?? 0} tint={colors.primary} />
               <StatTile label="Review fees" value={(stats as any)?.payments?.reviewCount ?? 0} tint={colors.warning} />
             </View>
-            <Text style={styles.sectionNote}>Every paid paper earns twice: entry + review.</Text>
+            <View style={[styles.statRow, { marginTop: spacing.md }]}>
+              <StatTile
+                label="Registration pays"
+                value={(stats as any)?.payments?.registrationCount ?? 0}
+                tint={colors.accent}
+              />
+              <StatTile
+                label="Registration revenue"
+                value={((stats as any)?.payments?.registrationRevenue ?? 0).toLocaleString()}
+                tint={colors.accent}
+              />
+            </View>
+            <Text style={styles.sectionNote}>Revenue includes student registration, entry, and review payments.</Text>
           </>
         )}
 
         {tab === 'users' && (
           <>
+            <Card>
+              <Text style={styles.cardTitle}>Student registration fee</Text>
+              <Text style={styles.sub}>
+                Current fee: {formatFee(platformConfig?.studentRegistrationFee ?? 0)}
+              </Text>
+              <Field
+                label="Fee amount (₦)"
+                value={registrationFeeInput}
+                onChangeText={setRegistrationFeeInput}
+                keyboardType="numeric"
+                placeholder="0"
+              />
+              <View style={styles.actions}>
+                <Button
+                  title="Save fee"
+                  size="sm"
+                  style={{ flex: 1 }}
+                  loading={configBusy}
+                  onPress={() =>
+                    void saveRegistrationConfig({
+                      studentRegistrationFee: Math.max(0, Number(registrationFeeInput) || 0),
+                    })
+                  }
+                />
+                <Button
+                  title="Clear fee"
+                  variant="ghost"
+                  size="sm"
+                  style={{ flex: 1 }}
+                  loading={configBusy}
+                  onPress={() => {
+                    setRegistrationFeeInput('0');
+                    void saveRegistrationConfig({ studentRegistrationFee: 0 });
+                  }}
+                />
+              </View>
+              <View style={styles.actions}>
+                <Button
+                  title={
+                    platformConfig?.applyRegistrationFeeToExistingStudents === false
+                      ? 'Existing students exempt'
+                      : 'Apply to existing students'
+                  }
+                  variant={
+                    platformConfig?.applyRegistrationFeeToExistingStudents === false
+                      ? 'secondary'
+                      : 'danger'
+                  }
+                  size="sm"
+                  style={{ flex: 1 }}
+                  loading={configBusy}
+                  onPress={() =>
+                    void saveRegistrationConfig({
+                      applyRegistrationFeeToExistingStudents:
+                        !(platformConfig?.applyRegistrationFeeToExistingStudents !== false),
+                    })
+                  }
+                />
+              </View>
+              <Text style={styles.sectionNote}>
+                When turned off, students created before the fee was enabled can keep signing in
+                without paying it.
+              </Text>
+            </Card>
+
+            <Card style={styles.dangerCard}>
+              <Text style={styles.cardTitle}>Danger zone</Text>
+              <Text style={styles.sub}>
+                Reset all student passwords to 123456 so old guest-code users can sign in again.
+              </Text>
+              <Text style={styles.sectionNote}>
+                This will affect about {stats?.totalStudents ?? 0} student account(s). Teachers and
+                admins are excluded.
+              </Text>
+              <Button
+                title="Reset all student passwords to 123456"
+                variant="danger"
+                loading={resetBusy}
+                onPress={() => void resetAllStudentPasswords()}
+              />
+            </Card>
+
             <Field value={search} onChangeText={setSearch} placeholder="Search users…" />
             {visibleUsers.map((u) => {
               const id = u._id || u.id;
@@ -406,12 +577,16 @@ export default function AdminPanelScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.name}>{u.name} {isMe ? '(you)' : ''}</Text>
                       <Text style={styles.sub}>{u.email}</Text>
+                      {u.mustChangePassword && (
+                        <Text style={styles.resetNote}>Must change password on next sign-in</Text>
+                      )}
                     </View>
                     <Badge text={u.role.toUpperCase()} color={tint.fg} bg={tint.bg} />
                   </View>
                   {!isMe && (
                     <View style={styles.actions}>
                       <Button title="Change role" variant="ghost" size="sm" style={{ flex: 1 }} onPress={() => changeRole(u)} />
+                      <Button title="Reset to 123456" variant="secondary" size="sm" style={{ flex: 1 }} onPress={() => resetUserPassword(u)} />
                       <Button title="Delete" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => deleteUser(u)} />
                     </View>
                   )}
@@ -476,6 +651,9 @@ export default function AdminPanelScreen() {
               <StatTile label="Entry pays" value={paymentTotals.entryCount} tint={colors.primary} />
               <StatTile label="Review pays" value={paymentTotals.reviewCount} tint={colors.warning} />
             </View>
+            <View style={[styles.statRow, { marginTop: spacing.md }]}>
+              <StatTile label="Registration pays" value={paymentTotals.registrationCount} tint={colors.accent} />
+            </View>
             {payments.length === 0 && <Text style={styles.emptyNote}>No payments yet.</Text>}
             {payments.map((p) => {
               const student = typeof p.student === 'object' ? p.student : null;
@@ -487,7 +665,7 @@ export default function AdminPanelScreen() {
                   <View style={styles.rowTop}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.name}>{student?.name || 'Student'} · {p.amount} {p.currency}</Text>
-                      <Text style={styles.sub}>{exam?.title || 'Exam'} · {isEntry ? 'Entry fee' : 'Review fee'} · {new Date(p.createdAt || '').toLocaleDateString()}</Text>
+                      <Text style={styles.sub}>{exam?.title || 'Student registration'} · {p.purpose === 'registration' ? 'Registration fee' : isEntry ? 'Entry fee' : 'Review fee'} · {new Date(p.createdAt || '').toLocaleDateString()}</Text>
                       <Text style={styles.sub}>Ref {p.reference}</Text>
                     </View>
                     <Badge text={paid ? 'PAID' : p.status.toUpperCase()} color={paid ? colors.success : p.status === 'pending' ? colors.warning : colors.danger} bg={paid ? colors.successLight : p.status === 'pending' ? colors.warningLight : colors.dangerLight} />
@@ -692,5 +870,7 @@ const makeStyles = (colors: Colors) =>
   emptyText: { fontSize: 14, color: colors.textMuted, textAlign: 'center' },
   sectionLabel: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md, marginTop: spacing.sm },
   sectionNote: { fontSize: 12, color: colors.textLight, marginTop: spacing.sm },
+  dangerCard: { borderColor: colors.danger, backgroundColor: colors.dangerLight },
+  resetNote: { fontSize: 12, color: colors.warning, marginTop: 4, fontWeight: '700' },
   emptyNote: { fontSize: 14, color: colors.textMuted, textAlign: 'center', marginTop: spacing.xl, lineHeight: 21 },
 });

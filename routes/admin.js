@@ -5,6 +5,8 @@ const ExamAttempt = require('../models/ExamAttempt');
 const Question = require('../models/Question');
 const Payment = require('../models/Payment');
 const { auth, authorize } = require('../middleware/auth');
+const { DEFAULT_PASSWORD, setUserPassword } = require('../services/account-security');
+const { getPlatformConfig, sanitizePlatformConfig, updatePlatformConfig } = require('../services/platform-config');
 
 // ========================
 // GET DASHBOARD STATS
@@ -50,6 +52,11 @@ router.get('/stats', auth, authorize('admin'), async (req, res) => {
     const reviewRevenue = paidPayments
       .filter(p => p.purpose === 'review')
       .reduce((sum, p) => sum + (p.amount || 0), 0);
+    const registrationRevenue = paidPayments
+      .filter(p => p.purpose === 'registration')
+      .reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    const platformConfig = sanitizePlatformConfig(await getPlatformConfig());
 
     res.json({
       totalUsers,
@@ -64,19 +71,62 @@ router.get('/stats', auth, authorize('admin'), async (req, res) => {
       completedAttempts,
       pastByYear,
       pastBySubject,
+      registration: platformConfig,
       payments: {
         total: paidPayments.length,
         entryCount: paidPayments.filter(p => p.purpose === 'entry').length,
         reviewCount: paidPayments.filter(p => p.purpose === 'review').length,
+        registrationCount: paidPayments.filter(p => p.purpose === 'registration').length,
         totalRevenue,
         entryRevenue,
         reviewRevenue,
+        registrationRevenue,
         currency: paidPayments[0]?.currency || 'NGN'
       }
     });
   } catch (error) {
     console.error('Admin stats error:', error);
     res.status(500).json({ message: 'Error fetching stats' });
+  }
+});
+
+// ========================
+// GET / UPDATE PLATFORM REGISTRATION CONFIG
+// ========================
+router.get('/config', auth, authorize('admin'), async (req, res) => {
+  try {
+    res.json(sanitizePlatformConfig(await getPlatformConfig()));
+  } catch (error) {
+    console.error('Admin config error:', error);
+    res.status(500).json({ message: 'Error fetching configuration' });
+  }
+});
+
+router.patch('/config', auth, authorize('admin'), async (req, res) => {
+  try {
+    const updates = {};
+
+    if (req.body.studentRegistrationFee !== undefined) {
+      const fee = Number(req.body.studentRegistrationFee);
+      if (!Number.isFinite(fee) || fee < 0) {
+        return res.status(400).json({ message: 'Student registration fee must be 0 or greater' });
+      }
+      updates.studentRegistrationFee = fee;
+    }
+
+    if (req.body.applyRegistrationFeeToExistingStudents !== undefined) {
+      updates.applyRegistrationFeeToExistingStudents =
+        req.body.applyRegistrationFeeToExistingStudents;
+    }
+
+    const config = await updatePlatformConfig(updates);
+    res.json({
+      message: 'Configuration updated successfully',
+      config: sanitizePlatformConfig(config),
+    });
+  } catch (error) {
+    console.error('Admin config update error:', error);
+    res.status(500).json({ message: 'Error updating configuration' });
   }
 });
 
@@ -110,6 +160,52 @@ router.get('/users', auth, authorize('admin'), async (req, res) => {
 });
 
 // ========================
+// CREATE USER (admin-created accounts default to 123456)
+// ========================
+router.post('/users', auth, authorize('admin'), async (req, res) => {
+  try {
+    const { name, email, role = 'student' } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ message: 'Name and email are required' });
+    }
+
+    if (!['student', 'teacher', 'admin'].includes(role)) {
+      return res.status(400).json({ message: 'Invalid role' });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const existing = await User.findOne({ email: normalizedEmail });
+    if (existing) {
+      return res.status(400).json({ message: 'Email already exists' });
+    }
+
+    const user = new User({
+      name: String(name).trim(),
+      email: normalizedEmail,
+      role,
+      password: DEFAULT_PASSWORD,
+      mustChangePassword: true,
+    });
+    await user.save();
+
+    res.status(201).json({
+      message: `Account created. The default password is ${DEFAULT_PASSWORD}.`,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        mustChangePassword: true,
+      },
+    });
+  } catch (error) {
+    console.error('Admin create user error:', error);
+    res.status(500).json({ message: 'Error creating user' });
+  }
+});
+
+// ========================
 // UPDATE USER ROLE
 // ========================
 router.patch('/users/:id/role', auth, authorize('admin'), async (req, res) => {
@@ -137,6 +233,61 @@ router.patch('/users/:id/role', auth, authorize('admin'), async (req, res) => {
     res.json({ message: `User role changed to ${role}`, user });
   } catch (error) {
     res.status(500).json({ message: 'Error updating user' });
+  }
+});
+
+// ========================
+// RESET ONE USER PASSWORD
+// ========================
+router.post('/users/:id/reset-password', auth, authorize('admin'), async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    await setUserPassword(user, DEFAULT_PASSWORD, { mustChangePassword: true });
+
+    res.json({
+      message: `Password reset to ${DEFAULT_PASSWORD}`,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        mustChangePassword: true,
+      },
+    });
+  } catch (error) {
+    console.error('Admin reset password error:', error);
+    res.status(500).json({ message: 'Error resetting password' });
+  }
+});
+
+// ========================
+// BULK RESET ALL STUDENT PASSWORDS
+// ========================
+router.post('/users/reset-passwords', auth, authorize('admin'), async (req, res) => {
+  try {
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ message: 'Confirmation is required' });
+    }
+
+    const students = await User.find({ role: 'student' });
+    let resetCount = 0;
+
+    for (const user of students) {
+      await setUserPassword(user, DEFAULT_PASSWORD, { mustChangePassword: true });
+      resetCount += 1;
+    }
+
+    res.json({
+      message: `Reset ${resetCount} student password${resetCount === 1 ? '' : 's'} to ${DEFAULT_PASSWORD}`,
+      resetCount,
+    });
+  } catch (error) {
+    console.error('Admin bulk reset passwords error:', error);
+    res.status(500).json({ message: 'Error resetting student passwords' });
   }
 });
 
@@ -200,7 +351,7 @@ router.get('/payments', auth, authorize('admin'), async (req, res) => {
     if (req.query.status && ['pending', 'paid', 'failed', 'expired'].includes(req.query.status)) {
       filter.status = req.query.status;
     }
-    if (req.query.purpose && ['entry', 'review'].includes(req.query.purpose)) {
+    if (req.query.purpose && ['entry', 'review', 'registration'].includes(req.query.purpose)) {
       filter.purpose = req.query.purpose;
     }
 
@@ -217,12 +368,16 @@ router.get('/payments', auth, authorize('admin'), async (req, res) => {
           _id: null,
           totalRevenue: { $sum: '$amount' },
           entryCount: { $sum: { $cond: [{ $eq: ['$purpose', 'entry'] }, 1, 0] } },
-          reviewCount: { $sum: { $cond: [{ $eq: ['$purpose', 'review'] }, 1, 0] } }
+          reviewCount: { $sum: { $cond: [{ $eq: ['$purpose', 'review'] }, 1, 0] } },
+          registrationCount: { $sum: { $cond: [{ $eq: ['$purpose', 'registration'] }, 1, 0] } }
         }
       }
     ]);
 
-    res.json({ payments, totals: totals[0] || { totalRevenue: 0, entryCount: 0, reviewCount: 0 } });
+    res.json({
+      payments,
+      totals: totals[0] || { totalRevenue: 0, entryCount: 0, reviewCount: 0, registrationCount: 0 }
+    });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching payments' });
   }

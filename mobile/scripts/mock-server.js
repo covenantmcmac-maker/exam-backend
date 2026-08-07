@@ -6,10 +6,11 @@
  * Usage: node scripts/mock-server.js [port]
  */
 const http = require('http');
+const { URL } = require('url');
 
 const PORT = parseInt(process.argv[2], 10) || 5099;
-
 const TOKEN = 'mock.jwt.token';
+const REGISTRATION_PAYMENT_TOKEN = 'registration-payment-token';
 
 const teacher = {
   id: 'u_teacher',
@@ -17,6 +18,15 @@ const teacher = {
   name: 'Ada Teacher',
   email: 'teacher@example.com',
   role: 'teacher',
+  mustChangePassword: false,
+};
+const admin = {
+  id: 'u_admin',
+  _id: 'u_admin',
+  name: 'Admin User',
+  email: 'admin@example.com',
+  role: 'admin',
+  mustChangePassword: false,
 };
 const student = {
   id: 'u_student',
@@ -24,7 +34,33 @@ const student = {
   name: 'Sam Student',
   email: 'student@example.com',
   role: 'student',
+  mustChangePassword: false,
 };
+const existingStudent = {
+  id: 'u_existing',
+  _id: 'u_existing',
+  name: 'Existing Student',
+  email: 'existing@example.com',
+  role: 'student',
+  mustChangePassword: false,
+};
+
+const users = [teacher, admin, student, existingStudent];
+const credentials = new Map([
+  [teacher.email, 'secret'],
+  [admin.email, 'secret'],
+  [student.email, 'secret'],
+  [existingStudent.email, 'secret'],
+]);
+
+let registrationConfig = {
+  studentRegistrationFee: 1200,
+  applyRegistrationFeeToExistingStudents: true,
+  studentRegistrationFeeActivatedAt: new Date('2026-08-01T00:00:00Z').toISOString(),
+};
+const registrationPaidUsers = new Set();
+const payments = new Map();
+const calls = [];
 
 const question = {
   _id: 'q1',
@@ -41,12 +77,33 @@ const question = {
   explanation: 'Two plus two equals four.',
 };
 
+const pastQuestion = {
+  _id: 'pq1',
+  questionText: 'Capital of France?',
+  questionType: 'multiple-choice',
+  options: [
+    { _id: 'p1', text: 'London', isCorrect: false },
+    { _id: 'p2', text: 'Paris', isCorrect: true },
+    { _id: 'p3', text: 'Rome', isCorrect: false },
+  ],
+  points: 2,
+  difficulty: 'medium',
+  subject: 'Geography',
+  explanation: 'Paris is capital',
+  isPastQuestion: true,
+  pastQuestionYear: 2022,
+  pastQuestionSession: 'June',
+  pastQuestionExamType: 'Final',
+  movedToPastAt: new Date().toISOString(),
+  creator: { _id: teacher._id, name: teacher.name },
+};
+
 const exam = {
   _id: 'e1',
   title: 'Sample Quiz',
   description: 'A short quiz',
   subject: 'Maths',
-  creator: { _id: 'u_teacher', name: 'Ada Teacher' },
+  creator: { _id: teacher._id, name: teacher.name },
   questions: [{ question, points: 2, order: 0 }],
   settings: {
     duration: 30,
@@ -62,7 +119,6 @@ const exam = {
   accessCode: 'ABCD1234',
 };
 
-// Paid past-question paper (Biology 2022) — the monetised flow.
 const pastExam = {
   _id: 'e2',
   title: 'Biology 2022',
@@ -87,9 +143,6 @@ const pastExam = {
   startable: false,
 };
 
-// References marked paid via the dev-mode payment flow.
-const paidReferences = new Set();
-
 const attempt = {
   _id: 'a1',
   exam,
@@ -102,8 +155,6 @@ const attempt = {
   startedAt: new Date().toISOString(),
 };
 
-const calls = [];
-
 function send(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -113,11 +164,58 @@ function send(res, status, payload) {
   res.end(body);
 }
 
+function userByEmail(email) {
+  return users.find((u) => u.email === String(email || '').toLowerCase()) || null;
+}
+
+function currentAuthUser(req) {
+  if (!(req.headers.authorization || '').startsWith('Bearer ')) return null;
+  return student;
+}
+
+function canLoginWithoutRegistration(user) {
+  if (!user || user.role !== 'student') return true;
+  if (registrationConfig.studentRegistrationFee <= 0) return true;
+  if (registrationPaidUsers.has(user._id)) return true;
+  if (
+    registrationConfig.applyRegistrationFeeToExistingStudents === false &&
+    user._id === existingStudent._id
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function registrationRequiredPayload(message = 'Registration payment required') {
+  return {
+    message,
+    paymentRequired: true,
+    purpose: 'registration',
+    amount: registrationConfig.studentRegistrationFee,
+    currency: 'NGN',
+    paymentToken: REGISTRATION_PAYMENT_TOKEN,
+  };
+}
+
+function paymentFor(reference) {
+  return payments.get(reference) || null;
+}
+
+function savePayment(payment) {
+  payments.set(payment.reference, payment);
+  return payment;
+}
+
+function paymentHistory() {
+  return Array.from(payments.values());
+}
+
 const server = http.createServer((req, res) => {
   let raw = '';
   req.on('data', (c) => (raw += c));
   req.on('end', () => {
-    const url = req.url.split('?')[0];
+    const parsedUrl = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    const url = parsedUrl.pathname;
     const key = `${req.method} ${url}`;
     const authed = (req.headers.authorization || '').startsWith('Bearer ');
     let body = {};
@@ -128,47 +226,53 @@ const server = http.createServer((req, res) => {
     }
     calls.push({ key, authed, body });
 
-    // Dynamic routes (path params).
-    const devCompleteMatch = key.match(/^POST \/api\/payments\/([^/]+)\/dev-complete$/);
-    if (devCompleteMatch) {
-      if (!authed) return send(res, 401, { message: 'No token, access denied' });
-      paidReferences.add(devCompleteMatch[1]);
-      return send(res, 200, {
-        message: 'Payment marked as paid (dev mode)',
-        payment: {
-          _id: 'p1',
-          reference: devCompleteMatch[1],
-          purpose: 'entry',
-          amount: 300,
-          currency: 'NGN',
-          status: 'paid',
-        },
-      });
-    }
-
     const verifyMatch = key.match(/^GET \/api\/payments\/([^/]+)\/verify$/);
     if (verifyMatch) {
-      if (!authed) return send(res, 401, { message: 'No token, access denied' });
-      const paid = paidReferences.has(verifyMatch[1]);
-      return send(res, 200, {
-        payment: {
-          _id: 'p1',
-          reference: verifyMatch[1],
-          purpose: 'entry',
-          amount: 300,
-          currency: 'NGN',
-          status: paid ? 'paid' : 'pending',
-        },
-        paid,
-      });
+      const payment = paymentFor(verifyMatch[1]);
+      if (!payment) return send(res, 404, { message: 'Payment not found' });
+      const paymentToken = parsedUrl.searchParams.get('paymentToken');
+      if (payment.purpose === 'registration') {
+        if (paymentToken !== REGISTRATION_PAYMENT_TOKEN) {
+          return send(res, 401, { message: 'Please sign in to verify this payment.' });
+        }
+      } else if (!authed) {
+        return send(res, 401, { message: 'No token, access denied' });
+      }
+      return send(res, 200, { payment, paid: payment.status === 'paid' });
     }
 
-    // Routes that require a token.
-    const needsAuth = [
+    const devCompleteMatch = key.match(/^POST \/api\/payments\/([^/]+)\/dev-complete$/);
+    if (devCompleteMatch) {
+      const payment = paymentFor(devCompleteMatch[1]);
+      if (!payment) return send(res, 404, { message: 'Payment not found' });
+      if (payment.purpose === 'registration') {
+        if (body.paymentToken !== REGISTRATION_PAYMENT_TOKEN) {
+          return send(res, 401, { message: 'Please sign in to complete this payment.' });
+        }
+        registrationPaidUsers.add(student._id);
+      } else if (!authed) {
+        return send(res, 401, { message: 'No token, access denied' });
+      }
+      payment.status = 'paid';
+      return send(res, 200, { message: 'Payment marked as paid (dev mode)', payment });
+    }
+
+    const resetOneMatch = key.match(/^POST \/api\/admin\/users\/([^/]+)\/reset-password$/);
+    if (resetOneMatch) {
+      if (!authed) return send(res, 401, { message: 'No token, access denied' });
+      const user = users.find((u) => u._id === resetOneMatch[1]);
+      if (!user) return send(res, 404, { message: 'User not found' });
+      credentials.set(user.email, '123456');
+      user.mustChangePassword = true;
+      return send(res, 200, { message: 'Password reset to 123456', user });
+    }
+
+    const needsAuth = new Set([
       'GET /api/auth/me',
       'PATCH /api/auth/change-password',
       'GET /api/exams/my-exams',
       'POST /api/exams/join',
+      'POST /api/exams/join-public',
       'GET /api/attempts/my-attempts',
       'POST /api/attempts/start',
       'POST /api/attempts/a1/security-flag',
@@ -179,13 +283,21 @@ const server = http.createServer((req, res) => {
       'GET /api/questions/past-questions/stats',
       'GET /api/questions/past-questions/practice/generate',
       'GET /api/admin/stats',
+      'GET /api/admin/config',
+      'PATCH /api/admin/config',
       'GET /api/admin/past-questions',
       'GET /api/admin/past-questions/stats',
       'GET /api/admin/users',
       'GET /api/admin/exams',
       'GET /api/admin/attempts',
-    ];
-    if (needsAuth.includes(key) && !authed) {
+      'GET /api/admin/payments',
+      'POST /api/admin/users/reset-passwords',
+      'POST /api/admin/users',
+      'POST /api/payments/initiate',
+      'GET /api/payments/my-payments',
+    ]);
+
+    if (needsAuth.has(key) && !authed && !(key === 'POST /api/payments/initiate' && body.purpose === 'registration')) {
       return send(res, 401, { message: 'No token, access denied' });
     }
 
@@ -193,47 +305,72 @@ const server = http.createServer((req, res) => {
       case 'GET /':
         return send(res, 200, { message: 'Exam Platform API is running!' });
 
-      case 'POST /api/auth/login':
-        if (body.password === 'wrong') {
+      case 'POST /api/auth/login': {
+        const user = userByEmail(body.email);
+        if (!user || credentials.get(user.email) !== body.password) {
           return send(res, 401, { message: 'Invalid email or password' });
+        }
+        if (!canLoginWithoutRegistration(user)) {
+          return send(res, 402, registrationRequiredPayload('Complete the one-time registration payment before you sign in.'));
         }
         return send(res, 200, {
           message: 'Login successful',
           token: TOKEN,
-          user: body.email === teacher.email ? teacher : student,
+          user,
         });
+      }
 
-      case 'POST /api/auth/register':
+      case 'POST /api/auth/register': {
+        const role = body.role || 'student';
+        const created = {
+          id: 'u_new',
+          _id: 'u_new',
+          name: body.name,
+          email: String(body.email || '').toLowerCase(),
+          role,
+          mustChangePassword: false,
+        };
+        credentials.set(created.email, body.password);
+        if (role === 'student' && registrationConfig.studentRegistrationFee > 0) {
+          return send(res, 402, {
+            ...registrationRequiredPayload('Account created. Complete the one-time registration payment before you sign in.'),
+          });
+        }
         return send(res, 201, {
           message: 'Account created successfully',
           token: TOKEN,
-          user: { ...student, name: body.name, email: body.email, role: body.role },
+          user: created,
         });
+      }
 
       case 'GET /api/auth/me':
-        return send(res, 200, { user: student });
+        return send(res, 200, { user: currentAuthUser(req) || student });
 
-      case 'PATCH /api/auth/change-password':
+      case 'PATCH /api/auth/change-password': {
         if (body.currentPassword === 'wrong') {
           return send(res, 401, { message: 'Current password is incorrect' });
         }
+        student.mustChangePassword = false;
+        credentials.set(student.email, body.newPassword);
         return send(res, 200, { message: 'Password changed successfully' });
+      }
 
       case 'POST /api/auth/guest-register':
-        return send(res, 200, {
-          message: 'Joined successfully',
-          token: TOKEN,
-          examId: exam._id,
-          user: { ...student, name: body.name, email: body.email },
+        return send(res, 410, {
+          message: 'Guest exam joining has been removed. Please sign in or create an account first.',
         });
 
       case 'POST /api/exams/join-public':
+        if (!authed) return send(res, 401, { message: 'No token, access denied' });
         if (body.accessCode !== exam.accessCode) {
-          return send(res, 404, { message: 'Exam not found or not published' });
+          return send(res, 404, { message: 'Invalid access code or exam not published' });
         }
-        return send(res, 200, { message: 'Exam found', exam });
+        return send(res, 200, { message: 'Access granted', exam });
 
       case 'POST /api/exams/join':
+        if (body.accessCode !== exam.accessCode) {
+          return send(res, 404, { message: 'Invalid access code or exam not published' });
+        }
         return send(res, 200, { message: 'Access granted', exam });
 
       case 'GET /api/exams/my-exams':
@@ -244,8 +381,8 @@ const server = http.createServer((req, res) => {
           exams: [
             {
               ...pastExam,
-              purchasedEntry: paidReferences.has('PST-MOCK-1'),
-              startable: paidReferences.has('PST-MOCK-1'),
+              purchasedEntry: Boolean(paymentFor('PST-MOCK-1')?.status === 'paid'),
+              startable: Boolean(paymentFor('PST-MOCK-1')?.status === 'paid'),
             },
           ],
         });
@@ -259,26 +396,78 @@ const server = http.createServer((req, res) => {
           paymentsConfigured: false,
           paymentsDevMode: true,
           paystackPublicKey: '',
+          studentRegistrationFee: registrationConfig.studentRegistrationFee,
+          studentRegistrationFeeActive: registrationConfig.studentRegistrationFee > 0,
+          applyRegistrationFeeToExistingStudents:
+            registrationConfig.applyRegistrationFeeToExistingStudents,
         });
 
-      case 'POST /api/payments/initiate':
-        return send(res, 201, {
-          message: 'Payment initiated (dev mode)',
-          payment: {
-            _id: 'p1',
-            reference: 'PST-MOCK-1',
-            purpose: body.purpose || 'entry',
-            amount: body.purpose === 'review' ? 500 : 300,
+      case 'POST /api/payments/initiate': {
+        if (body.purpose === 'registration') {
+          if (body.paymentToken !== REGISTRATION_PAYMENT_TOKEN) {
+            return send(res, 401, { message: 'Please sign in to start this payment.' });
+          }
+          const existing = paymentFor('REG-MOCK-1');
+          if (existing) {
+            return send(res, 200, {
+              message: 'Payment already initiated',
+              payment: existing,
+              authorizationUrl: 'https://paystack.test/registration/REG-MOCK-1',
+              devMode: true,
+            });
+          }
+          const payment = savePayment({
+            _id: 'p_reg',
+            student: student,
+            exam: null,
+            attempt: null,
+            purpose: 'registration',
+            amount: registrationConfig.studentRegistrationFee,
             currency: 'NGN',
             provider: 'sandbox',
+            reference: 'REG-MOCK-1',
             status: 'pending',
-          },
+          });
+          return send(res, 201, {
+            message: 'Payment initiated (dev mode)',
+            payment,
+            authorizationUrl: null,
+            devMode: true,
+          });
+        }
+
+        const reference = body.purpose === 'review' ? 'REV-MOCK-1' : 'PST-MOCK-1';
+        const existing = paymentFor(reference);
+        if (existing) {
+          return send(res, 200, {
+            message: 'Payment already initiated',
+            payment: existing,
+            authorizationUrl: 'https://paystack.test/reused',
+            devMode: true,
+          });
+        }
+        const payment = savePayment({
+          _id: body.purpose === 'review' ? 'p_review' : 'p_entry',
+          student,
+          exam: body.examId || 'e2',
+          attempt: body.attemptId || null,
+          purpose: body.purpose || 'entry',
+          amount: body.purpose === 'review' ? 500 : 300,
+          currency: 'NGN',
+          provider: 'sandbox',
+          reference,
+          status: 'pending',
+        });
+        return send(res, 201, {
+          message: 'Payment initiated (dev mode)',
+          payment,
           authorizationUrl: null,
           devMode: true,
         });
+      }
 
       case 'GET /api/payments/my-payments':
-        return send(res, 200, []);
+        return send(res, 200, paymentHistory());
 
       case 'POST /api/exams':
         return send(res, 201, {
@@ -318,7 +507,7 @@ const server = http.createServer((req, res) => {
         });
 
       case 'POST /api/attempts/start':
-        if (body.examId === 'e2' && !paidReferences.has('PST-MOCK-1')) {
+        if (body.examId === 'e2' && paymentFor('PST-MOCK-1')?.status !== 'paid') {
           return send(res, 402, {
             message: 'Payment required to take this exam.',
             paymentRequired: true,
@@ -355,9 +544,6 @@ const server = http.createServer((req, res) => {
         });
 
       case 'GET /api/attempts/a1/review':
-        if (!exam.settings.allowReview) {
-          return send(res, 403, { message: 'Review is not enabled for this exam' });
-        }
         return send(res, 200, {
           attemptId: 'a1',
           exam: {
@@ -394,7 +580,15 @@ const server = http.createServer((req, res) => {
 
       case 'GET /api/attempts/my-attempts':
         return send(res, 200, [
-          { ...attempt, answers: undefined, status: 'completed', score: 2, percentage: 100, timeSpent: 42, canReview: exam.settings.allowReview },
+          {
+            ...attempt,
+            answers: undefined,
+            status: 'completed',
+            score: 2,
+            percentage: 100,
+            timeSpent: 42,
+            canReview: exam.settings.allowReview,
+          },
         ]);
 
       case 'GET /api/questions':
@@ -457,17 +651,13 @@ const server = http.createServer((req, res) => {
 
       case 'GET /api/questions/q1':
       case 'GET /api/questions/pq1':
-        return send(res, 200, body && body._id === 'pq1' ? pastQuestion : question);
+        return send(res, 200, url.endsWith('pq1') ? pastQuestion : question);
 
       case 'POST /api/questions':
         return send(res, 201, { ...question, _id: 'q2' });
 
       case 'POST /api/questions/bulk-upload':
-        // Multipart body — the mock just pretends three questions landed.
-        return send(res, 201, {
-          message: 'Successfully uploaded 3 questions!',
-          count: 3,
-        });
+        return send(res, 201, { message: 'Successfully uploaded 3 questions!', count: 3 });
 
       case 'POST /api/questions/bulk-delete':
         return send(res, 200, {
@@ -502,9 +692,9 @@ const server = http.createServer((req, res) => {
 
       case 'GET /api/admin/stats':
         return send(res, 200, {
-          totalUsers: 3,
+          totalUsers: users.length,
           totalTeachers: 1,
-          totalStudents: 1,
+          totalStudents: 2,
           totalAdmins: 1,
           totalExams: 1,
           totalQuestions: 1,
@@ -512,16 +702,51 @@ const server = http.createServer((req, res) => {
           totalPastQuestions: 1,
           totalAttempts: 1,
           completedAttempts: 1,
+          registration: registrationConfig,
           payments: {
-            total: 0,
-            entryCount: 0,
-            reviewCount: 0,
-            totalRevenue: 0,
-            entryRevenue: 0,
-            reviewRevenue: 0,
+            total: paymentHistory().filter((p) => p.status === 'paid').length,
+            entryCount: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'entry').length,
+            reviewCount: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'review').length,
+            registrationCount: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'registration').length,
+            totalRevenue: paymentHistory().filter((p) => p.status === 'paid').reduce((sum, p) => sum + p.amount, 0),
+            entryRevenue: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'entry').reduce((sum, p) => sum + p.amount, 0),
+            reviewRevenue: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'review').reduce((sum, p) => sum + p.amount, 0),
+            registrationRevenue: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'registration').reduce((sum, p) => sum + p.amount, 0),
             currency: 'NGN',
           },
         });
+
+      case 'GET /api/admin/config':
+        return send(res, 200, registrationConfig);
+
+      case 'PATCH /api/admin/config':
+        registrationConfig = {
+          ...registrationConfig,
+          ...body,
+        };
+        return send(res, 200, { message: 'Configuration updated successfully', config: registrationConfig });
+
+      case 'POST /api/admin/users': {
+        const created = {
+          id: 'u_created',
+          _id: 'u_created',
+          name: body.name,
+          email: String(body.email || '').toLowerCase(),
+          role: body.role || 'student',
+          mustChangePassword: true,
+        };
+        return send(res, 201, { message: 'Account created. The default password is 123456.', user: created });
+      }
+
+      case 'POST /api/admin/users/reset-passwords':
+        if (body.confirm !== true) {
+          return send(res, 400, { message: 'Confirmation is required' });
+        }
+        student.mustChangePassword = true;
+        existingStudent.mustChangePassword = true;
+        credentials.set(student.email, '123456');
+        credentials.set(existingStudent.email, '123456');
+        return send(res, 200, { message: 'Reset 2 student passwords to 123456', resetCount: 2 });
 
       case 'GET /api/admin/past-questions':
         return send(res, 200, { questions: [pastQuestion], total: 1, pages: 1 });
@@ -531,18 +756,21 @@ const server = http.createServer((req, res) => {
           totalPast: 1,
           byYear: [{ _id: 2022, count: 1 }],
           bySubject: [{ _id: 'Geography', count: 1 }],
-          byTeacher: [{ _id: 'u_teacher', count: 1, name: 'Ada Teacher', email: 'teacher@example.com' }],
+          byTeacher: [{ _id: teacher._id, count: 1, name: teacher.name, email: teacher.email }],
           bySession: [{ _id: 'June', count: 1 }],
           byExamType: [{ _id: 'Final', count: 1 }],
           byDifficulty: [{ _id: 'medium', count: 1 }],
-          recent: [{ _id: 'pq1', questionText: pastQuestion.questionText, subject: 'Geography', pastQuestionYear: 2022, movedToPastAt: new Date().toISOString(), creator: { name: 'Ada Teacher' } }],
+          recent: [{ _id: 'pq1', questionText: pastQuestion.questionText, subject: 'Geography', pastQuestionYear: 2022, movedToPastAt: new Date().toISOString(), creator: { name: teacher.name } }],
         });
 
       case 'DELETE /api/admin/past-questions/pq1':
         return send(res, 200, { message: 'Past question deleted' });
 
       case 'POST /api/admin/past-questions/bulk-delete':
-        return send(res, 200, { message: `Deleted ${Array.isArray(body.questionIds) ? body.questionIds.length : 0}`, deletedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0 });
+        return send(res, 200, {
+          message: `Deleted ${Array.isArray(body.questionIds) ? body.questionIds.length : 0}`,
+          deletedCount: Array.isArray(body.questionIds) ? body.questionIds.length : 0,
+        });
 
       case 'PATCH /api/admin/past-questions/pq1/restore':
         return send(res, 200, { message: 'Restored to active bank', question: { ...pastQuestion, isPastQuestion: false } });
@@ -554,12 +782,23 @@ const server = http.createServer((req, res) => {
         return send(res, 200, { message: 'Past question updated', question: pastQuestion });
 
       case 'GET /api/admin/users':
-        return send(res, 200, { users: [teacher, student], total: 2, pages: 1 });
+        return send(res, 200, { users, total: users.length, pages: 1 });
+
+      case 'GET /api/admin/exams':
+        return send(res, 200, [exam, { ...pastExam, creator: { _id: teacher._id, name: teacher.name } }]);
+
+      case 'GET /api/admin/attempts':
+        return send(res, 200, [{ ...attempt, status: 'completed', score: 2, percentage: 100 }]);
 
       case 'GET /api/admin/payments':
         return send(res, 200, {
-          payments: [],
-          totals: { totalRevenue: 0, entryCount: 0, reviewCount: 0 },
+          payments: paymentHistory(),
+          totals: {
+            totalRevenue: paymentHistory().filter((p) => p.status === 'paid').reduce((sum, p) => sum + p.amount, 0),
+            entryCount: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'entry').length,
+            reviewCount: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'review').length,
+            registrationCount: paymentHistory().filter((p) => p.status === 'paid' && p.purpose === 'registration').length,
+          },
         });
 
       case 'GET /__calls':

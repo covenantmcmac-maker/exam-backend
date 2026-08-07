@@ -58,8 +58,24 @@ app.get('/', (req, res) => {
 });
 
 // Public app config (currency, defaults, payment mode — no secrets).
-app.get('/api/config', (req, res) => {
-  res.json(require('./services/paystack').publicConfig());
+app.get('/api/config', async (req, res) => {
+  try {
+    const paystack = require('./services/paystack');
+    const { getPlatformConfig, sanitizePlatformConfig } = require('./services/platform-config');
+    const platformConfig = sanitizePlatformConfig(await getPlatformConfig());
+    const studentRegistrationFee = platformConfig.studentRegistrationFee;
+
+    res.json({
+      ...paystack.publicConfig(),
+      studentRegistrationFee,
+      studentRegistrationFeeActive: studentRegistrationFee > 0,
+      applyRegistrationFeeToExistingStudents:
+        platformConfig.applyRegistrationFeeToExistingStudents,
+    });
+  } catch (error) {
+    console.error('Config error:', error);
+    res.status(500).json({ message: 'Error loading configuration' });
+  }
 });
 
 // Routes

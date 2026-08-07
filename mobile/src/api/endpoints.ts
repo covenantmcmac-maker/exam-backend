@@ -2,6 +2,7 @@ import { request, uploadFile } from './client';
 import type { UploadableFile } from './client';
 import type {
   AdminPaymentsResult,
+  AdminPlatformConfig,
   AdminStats,
   AppConfig,
   Exam,
@@ -304,21 +305,37 @@ export const attemptsApi = {
 /* --------------------------------------------------------------- payments */
 
 export const paymentsApi = {
-  initiate: (examId: string, purpose: PaymentPurpose, attemptId?: string) =>
+  initiate: (payload: {
+    examId?: string;
+    purpose: PaymentPurpose;
+    attemptId?: string;
+    paymentToken?: string;
+  }) =>
     request<InitiatePaymentResult>('/api/payments/initiate', {
       method: 'POST',
-      body: { examId, purpose, attemptId },
+      body: payload,
+      auth: payload.purpose !== 'registration' || !payload.paymentToken,
     }),
 
   /** Confirm payment after returning from the Paystack checkout. */
-  verify: (reference: string) =>
-    request<VerifyPaymentResult>(`/api/payments/${reference}/verify`),
+  verify: (reference: string, paymentToken?: string) => {
+    const suffix = paymentToken
+      ? `?${new URLSearchParams({ paymentToken }).toString()}`
+      : '';
+    return request<VerifyPaymentResult>(`/api/payments/${reference}/verify${suffix}`, {
+      auth: !paymentToken,
+    });
+  },
 
   /** Sandbox-only: marks a pending payment paid when no gateway is configured. */
-  devComplete: (reference: string) =>
+  devComplete: (reference: string, paymentToken?: string) =>
     request<{ message: string; payment: Payment }>(
       `/api/payments/${reference}/dev-complete`,
-      { method: 'POST' }
+      {
+        method: 'POST',
+        body: paymentToken ? { paymentToken } : undefined,
+        auth: !paymentToken,
+      }
     ),
 
   myPayments: () => request<Payment[]>('/api/payments/my-payments'),
@@ -340,6 +357,14 @@ export interface AdminPastStats {
 export const adminApi = {
   stats: () => request<AdminStats & { totalActiveQuestions?: number; totalPastQuestions?: number; pastByYear?: { _id: number; count: number }[]; pastBySubject?: { _id: string; count: number }[] }>('/api/admin/stats'),
 
+  config: () => request<AdminPlatformConfig>('/api/admin/config'),
+
+  updateConfig: (payload: Partial<AdminPlatformConfig>) =>
+    request<{ message: string; config: AdminPlatformConfig }>('/api/admin/config', {
+      method: 'PATCH',
+      body: payload,
+    }),
+
   users: (params: { role?: string; search?: string } = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
@@ -351,10 +376,27 @@ export const adminApi = {
     );
   },
 
+  createUser: (payload: { name: string; email: string; role?: Role }) =>
+    request<{ message: string; user: User }>('/api/admin/users', {
+      method: 'POST',
+      body: payload,
+    }),
+
   changeRole: (id: string, role: Role) =>
     request<{ message: string; user: User }>(`/api/admin/users/${id}/role`, {
       method: 'PATCH',
       body: { role },
+    }),
+
+  resetUserPassword: (id: string) =>
+    request<{ message: string; user: User }>(`/api/admin/users/${id}/reset-password`, {
+      method: 'POST',
+    }),
+
+  resetAllStudentPasswords: () =>
+    request<{ message: string; resetCount: number }>('/api/admin/users/reset-passwords', {
+      method: 'POST',
+      body: { confirm: true },
     }),
 
   removeUser: (id: string) =>

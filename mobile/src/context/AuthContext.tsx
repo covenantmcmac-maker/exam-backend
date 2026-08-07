@@ -23,12 +23,8 @@ interface AuthState {
   isAdmin: boolean;
   login: (email: string, password: string) => Promise<User>;
   register: (name: string, email: string, password: string, role: Role) => Promise<User>;
-  guestJoin: (name: string, email: string, code: string) => Promise<{ user: User; examId: string }>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
-  /** Exam a guest just unlocked; consumed by the navigator once signed in. */
-  pendingExamId: string | null;
-  clearPendingExam: () => void;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -36,12 +32,10 @@ const AuthContext = createContext<AuthState | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [pendingExamId, setPendingExamId] = useState<string | null>(null);
 
   const logout = useCallback(async () => {
     await clearSession();
     setUser(null);
-    setPendingExamId(null);
   }, []);
 
   // Restore a stored session on cold start, then revalidate against the API.
@@ -105,23 +99,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [persist]
   );
 
-  const guestJoin = useCallback(
-    async (name: string, email: string, code: string) => {
-      const res = await authApi.guestRegister(
-        name.trim(),
-        email.trim().toLowerCase(),
-        code.trim().toUpperCase()
-      );
-      // Record the exam before flipping auth state: switching to the
-      // signed-in stack unmounts the auth screens, so the navigator picks
-      // this up instead of the caller navigating from a dying screen.
-      setPendingExamId(res.examId);
-      await persist(res.token, res.user);
-      return { user: res.user, examId: res.examId };
-    },
-    [persist]
-  );
-
   const refresh = useCallback(async () => {
     try {
       const { user: fresh } = await authApi.me();
@@ -132,8 +109,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const clearPendingExam = useCallback(() => setPendingExamId(null), []);
-
   const value = useMemo<AuthState>(
     () => ({
       user,
@@ -142,13 +117,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAdmin: user?.role === 'admin',
       login,
       register,
-      guestJoin,
       logout,
       refresh,
-      pendingExamId,
-      clearPendingExam,
     }),
-    [user, loading, login, register, guestJoin, logout, refresh, pendingExamId, clearPendingExam]
+    [user, loading, login, register, logout, refresh]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

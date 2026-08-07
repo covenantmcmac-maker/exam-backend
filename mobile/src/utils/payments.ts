@@ -19,14 +19,50 @@ export interface PaymentOutcome {
  */
 export async function initiatePayment(
   examId: string,
-  purpose: PaymentPurpose,
+  purpose: Extract<PaymentPurpose, 'entry' | 'review'>,
   attemptId?: string
 ): Promise<PaymentOutcome> {
-  const res = await paymentsApi.initiate(examId, purpose, attemptId);
+  const res = await paymentsApi.initiate({ examId, purpose, attemptId });
+
+  if (res.payment?.status === 'paid') {
+    return { paid: true, reference: res.payment.reference, authorizationUrl: null };
+  }
 
   if (res.devMode) {
+    if (!res.payment.reference) {
+      throw new Error('Payment reference missing. Please try again.');
+    }
     await paymentsApi.devComplete(res.payment.reference);
     return { paid: true, reference: res.payment.reference, authorizationUrl: null };
+  }
+
+  return {
+    paid: false,
+    reference: res.payment.reference,
+    authorizationUrl: res.authorizationUrl,
+  };
+}
+
+/** Start or resume the one-time student registration payment. */
+export async function initiateRegistrationPayment(
+  paymentToken: string
+): Promise<PaymentOutcome> {
+  const res = await paymentsApi.initiate({
+    purpose: 'registration',
+    paymentToken,
+  });
+
+  if (res.payment?.status === 'paid') {
+    return { paid: true, reference: res.payment.reference, authorizationUrl: null };
+  }
+
+  if (res.devMode && res.payment.reference) {
+    await paymentsApi.devComplete(res.payment.reference, paymentToken);
+    return { paid: true, reference: res.payment.reference, authorizationUrl: null };
+  }
+
+  if (res.devMode && !res.payment.reference) {
+    throw new Error('Payment reference missing. Please try again.');
   }
 
   return {
@@ -95,9 +131,9 @@ export async function openCheckout(url: string | null): Promise<void> {
 }
 
 /** Ask the server whether a payment reference has settled. */
-export async function verifyPayment(reference: string): Promise<boolean> {
+export async function verifyPayment(reference: string, paymentToken?: string): Promise<boolean> {
   try {
-    const res = await paymentsApi.verify(reference);
+    const res = await paymentsApi.verify(reference, paymentToken);
     return res.paid;
   } catch {
     return false;

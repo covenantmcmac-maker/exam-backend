@@ -3,7 +3,6 @@ import type { NavigatorScreenParams } from '@react-navigation/native';
 export type AuthStackParamList = {
   Login: undefined;
   Register: undefined;
-  GuestJoin: undefined;
 };
 
 export type StudentTabParamList = {
@@ -24,6 +23,7 @@ export type RootStackParamList = {
   Auth: NavigatorScreenParams<AuthStackParamList>;
   StudentTabs: NavigatorScreenParams<StudentTabParamList>;
   TeacherTabs: NavigatorScreenParams<TeacherTabParamList>;
+  MustChangePassword: undefined;
   ExamTaking: { examId: string };
   ExamResult: {
     score?: number;

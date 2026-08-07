@@ -110,8 +110,11 @@ function truthy(v) {
 }
 
 function evalCond(cond, doc) {
-  const [op, ...args] = Object.entries(cond)[0];
-  const [l, r] = args.map((a) => evalExpr(a, doc));
+  const [op, operands] = Object.entries(cond)[0];
+  const values = Array.isArray(operands)
+    ? operands.map((a) => evalExpr(a, doc))
+    : [evalExpr(operands, doc)];
+  const [l, r] = values;
   switch (op) {
     case '$eq': return looseEq(l, r);
     case '$ne': return !looseEq(l, r);
@@ -200,7 +203,7 @@ function makeModel(name, schemaDef) {
       Object.assign(this, withDefaults(schemaDef.def, body));
       this._id = body._id ?? `id_${name}_${++idCounter}`;
       Object.defineProperty(this, '_modified', {
-        value: new Set(),
+        value: new Set(Object.keys(body || {})),
         writable: true,
         enumerable: false,
       });
@@ -209,6 +212,10 @@ function makeModel(name, schemaDef) {
 
     isModified(field) {
       return field ? this._modified.has(field) : this._modified.size > 0;
+    }
+
+    markModified(field) {
+      if (field) this._modified.add(field);
     }
 
     async save() {
@@ -221,6 +228,7 @@ function makeModel(name, schemaDef) {
       if (idx === -1) list.push(this);
       else list[idx] = this;
       this.__saved = true;
+      this._modified.clear();
       return this;
     }
 
@@ -330,6 +338,16 @@ function makeModel(name, schemaDef) {
         if (k.startsWith('__') || k === '_modified') continue;
         clone[k] = deepClone(v);
       }
+      Object.defineProperty(clone, '_modified', {
+        value: new Set(),
+        writable: true,
+        enumerable: false,
+      });
+      Object.defineProperty(clone, '__saved', {
+        value: true,
+        writable: true,
+        enumerable: false,
+      });
       return clone;
     });
     for (const spec of populate || []) docs = docs.map((d) => populateDoc(d, spec));
@@ -482,7 +500,10 @@ function makeModel(name, schemaDef) {
     if (typeof operand === 'string' && operand.startsWith('$')) return Number(getPath(row, operand.slice(1))) || 0;
     if (operand && typeof operand === 'object' && operand.$cond) {
       const [cond, thenVal, elseVal] = operand.$cond;
-      return truthy(evalExpr(cond, row)) ? Number(evalExpr(thenVal, row)) : Number(evalExpr(elseVal, row));
+      const condResult = cond && typeof cond === 'object' && Object.keys(cond)[0]?.startsWith('$')
+        ? evalCond(cond, row)
+        : truthy(evalExpr(cond, row));
+      return condResult ? Number(evalExpr(thenVal, row)) : Number(evalExpr(elseVal, row));
     }
     return Number(operand) || 0;
   };
