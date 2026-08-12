@@ -13,7 +13,7 @@ import { configApi, examsApi, questionsApi } from '../../api/endpoints';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
 import { difficultyColor, radius, spacing } from '../../theme';
-import { useColors } from '../../context/ThemeContext';
+import { useColors, useThemedStyles } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
 import type { Question } from '../../api/types';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -24,7 +24,7 @@ type BankSource = 'active' | 'myPast' | 'allPast';
 
 export default function ExamBuilderScreen({ route, navigation }: Props) {
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const styles = useThemedStyles(makeStyles);
   const examId = route.params?.examId;
   const isEdit = !!examId;
   const { isAdmin } = useAuth();
@@ -148,17 +148,51 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     void loadBank(bankSource);
   }, [bankSource, loadBank]);
 
-  const subjects = useMemo(() => {
-    const counts = new Map<string, number>();
+  /**
+   * Bank indexed by subject, built once per bank load.
+   *
+   * Everything subject-related (the chips, their counts, "select all X") reads
+   * from here. Previously each of those did its own `bank.filter(...)`, so with
+   * S subjects the screen ran S full scans of the bank on EVERY render — and a
+   * render happens on every keystroke in the title field.
+   */
+  const subjectIndex = useMemo(() => {
+    const map = new Map<string, Question[]>();
     for (const q of bank) {
       const s = (q.subject || '').trim();
       if (!s) continue;
-      counts.set(s, (counts.get(s) ?? 0) + 1);
+      const list = map.get(s);
+      if (list) list.push(q);
+      else map.set(s, [q]);
     }
-    return [...counts.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([name, count]) => ({ name, count }));
+    return map;
   }, [bank]);
+
+  const subjects = useMemo(
+    () =>
+      [...subjectIndex.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([name, questions]) => ({ name, count: questions.length })),
+    [subjectIndex]
+  );
+
+  /**
+   * Per-subject selection tallies for the whole bank, in ONE pass.
+   *
+   * Recomputes only when the bank or the selection changes — not when the
+   * title, description, fees or any other unrelated field does.
+   */
+  const subjectSelection = useMemo(() => {
+    const tally = new Map<string, { total: number; selected: number }>();
+    for (const [name, questions] of subjectIndex) {
+      let selectedCount = 0;
+      for (const q of questions) {
+        if (selected[q._id] !== undefined) selectedCount++;
+      }
+      tally.set(name, { total: questions.length, selected: selectedCount });
+    }
+    return tally;
+  }, [subjectIndex, selected]);
 
   const effectiveSubject =
     subjectFilter === 'all' || subjects.some((s) => s.name === subjectFilter)
@@ -180,52 +214,44 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     });
   }, [bank, search, effectiveSubject, difficultyFilter]);
 
+  // O(1) lookups against the precomputed tally instead of rescanning the bank.
   const isSubjectFullySelected = useCallback(
     (subjName: string) => {
-      const subjQuestions = bank.filter((q) => (q.subject || '').trim() === subjName);
-      if (subjQuestions.length === 0) return false;
-      return subjQuestions.every((q) => selected[q._id] !== undefined);
+      const t = subjectSelection.get(subjName);
+      return !!t && t.total > 0 && t.selected === t.total;
     },
-    [bank, selected]
+    [subjectSelection]
   );
 
   const getSubjectSelectedCount = useCallback(
-    (subjName: string) => {
-      return bank
-        .filter((q) => (q.subject || '').trim() === subjName)
-        .reduce((count, q) => count + (selected[q._id] !== undefined ? 1 : 0), 0);
-    },
-    [bank, selected]
+    (subjName: string) => subjectSelection.get(subjName)?.selected ?? 0,
+    [subjectSelection]
   );
 
   const selectBySubject = useCallback(
     (subjName: string) => {
+      const questions = subjectIndex.get(subjName);
+      if (!questions?.length) return;
       setSelected((prev) => {
         const next = { ...prev };
-        bank.forEach((q) => {
-          if ((q.subject || '').trim() === subjName) {
-            next[q._id] = q.points || 1;
-          }
-        });
+        for (const q of questions) next[q._id] = q.points || 1;
         return next;
       });
     },
-    [bank]
+    [subjectIndex]
   );
 
   const deselectBySubject = useCallback(
     (subjName: string) => {
+      const questions = subjectIndex.get(subjName);
+      if (!questions?.length) return;
       setSelected((prev) => {
         const next = { ...prev };
-        bank.forEach((q) => {
-          if ((q.subject || '').trim() === subjName) {
-            delete next[q._id];
-          }
-        });
+        for (const q of questions) delete next[q._id];
         return next;
       });
     },
-    [bank]
+    [subjectIndex]
   );
 
   const selectAllFiltered = useCallback(() => {
@@ -254,22 +280,52 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
     return `+ Select all ${name} (${selectedCount}/${total})`;
   };
 
-  const selectedIds = Object.keys(selected);
-  const totalMarks = selectedIds.reduce((sum, id) => sum + (selected[id] || 1), 0);
+  // Tied to the selection only, so typing a title no longer re-walks it.
+  const { selectedIds, totalMarks } = useMemo(() => {
+    const ids = Object.keys(selected);
+    return {
+      selectedIds: ids,
+      totalMarks: ids.reduce((sum, id) => sum + (selected[id] || 1), 0),
+    };
+  }, [selected]);
 
-  const toggle = (q: Question) => {
+  // Stable identities: these are handed to every question row, and a new
+  // function each render would defeat the rows' memoisation.
+  const toggle = useCallback((q: Question) => {
     setSelected((prev) => {
       const next = { ...prev };
       if (next[q._id] !== undefined) delete next[q._id];
       else next[q._id] = q.points || 1;
       return next;
     });
-  };
+  }, []);
 
-  const updatePoints = (id: string, pts: string) => {
-    const n = Math.max(1, parseInt(pts) || 1);
+  const updatePoints = useCallback((id: string, pts: string) => {
+    const n = Math.max(1, parseInt(pts, 10) || 1);
     setSelected((prev) => ({ ...prev, [id]: n }));
-  };
+  }, []);
+
+  /**
+   * The rendered picker rows.
+   *
+   * Memoised so that typing in the title/description/fee fields — which is
+   * most of what happens on this screen — does not even rebuild the element
+   * array for a bank that can run to thousands of questions. It recomputes
+   * only when the filtered list or the selection actually changes.
+   */
+  const questionRows = useMemo(
+    () =>
+      filtered.map((q) => (
+        <QuestionRow
+          key={q._id}
+          question={q}
+          points={selected[q._id]}
+          onToggle={toggle}
+          onChangePoints={updatePoints}
+        />
+      )),
+    [filtered, selected, toggle, updatePoints]
+  );
 
   const save = async () => {
     if (!title.trim()) {
@@ -651,60 +707,7 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
               No questions match your filter.
             </Text>
           ) : !bankLoading ? (
-            filtered.map((q) => {
-              const isOn = selected[q._id] !== undefined;
-              const isPast = !!(q as any).isPastQuestion;
-              const pastYear = (q as any).pastQuestionYear;
-              const pastSession = (q as any).pastQuestionSession;
-              return (
-                <Pressable
-                  key={q._id}
-                  onPress={() => toggle(q)}
-                  style={[styles.qRow, isOn && styles.qRowOn, isPast && { borderLeftWidth: 3, borderLeftColor: colors.warning }]}
-                >
-                  <View style={[styles.check, isOn && styles.checkOn]}>
-                    {isOn && <Text style={styles.checkMark}>✓</Text>}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      {isPast && (
-                        <View style={{ backgroundColor: colors.warningLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 }}>
-                          <Text style={{ fontSize: 9, fontWeight: '800', color: colors.warning }}>PAST {pastYear || ''}</Text>
-                        </View>
-                      )}
-                      <Text style={styles.qText} numberOfLines={2}>
-                        {q.questionText}
-                      </Text>
-                    </View>
-                    <View style={styles.qMetaRow}>
-                      <Text
-                        style={[
-                          styles.qDifficulty,
-                          { color: difficultyColor[q.difficulty] || colors.textMuted },
-                        ]}
-                      >
-                        {q.difficulty}
-                      </Text>
-                      <Text style={styles.qMeta}>· {q.points} pt</Text>
-                      {!!q.subject && <Text style={styles.qMeta}>· {q.subject}</Text>}
-                      {pastSession && <Text style={styles.qMeta}>· {pastSession}</Text>}
-                    </View>
-                    {isOn && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                        <Text style={{ fontSize: 12, color: colors.textMuted, fontWeight: '600' }}>Points:</Text>
-                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) - 1))} style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }}>
-                          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.text }}>−</Text>
-                        </Pressable>
-                        <Text style={{ fontSize: 13, fontWeight: '700', color: colors.text, minWidth: 16, textAlign: 'center' }}>{selected[q._id]}</Text>
-                        <Pressable onPress={() => updatePoints(q._id, String((selected[q._id] || 1) + 1))} style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }}>
-                          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.text }}>+</Text>
-                        </Pressable>
-                      </View>
-                    )}
-                  </View>
-                </Pressable>
-              );
-            })
+            questionRows
           ) : null}
         </Card>
 
@@ -718,6 +721,101 @@ export default function ExamBuilderScreen({ route, navigation }: Props) {
   );
 }
 
+/**
+ * One row in the question picker.
+ *
+ * Memoised on purpose. The picker renders every question in the bank, and the
+ * builder re-renders on every keystroke in the title/description/fee fields.
+ * Inline rows meant all of them were rebuilt each time, which is what made
+ * typing lag on a large bank. With React.memo a keystroke that touches nothing
+ * in `selected` re-renders zero rows.
+ *
+ * `points` is passed as a plain value (undefined = not selected) rather than
+ * the whole `selected` map, so a row only re-renders when ITS OWN selection
+ * changes — selecting question #1 does not re-render questions #2…#1200.
+ */
+const QuestionRow = React.memo(function QuestionRow({
+  question,
+  points,
+  onToggle,
+  onChangePoints,
+}: {
+  question: Question;
+  points: number | undefined;
+  onToggle: (q: Question) => void;
+  onChangePoints: (id: string, pts: string) => void;
+}) {
+  const colors = useColors();
+  const styles = useThemedStyles(makeStyles);
+
+  const isOn = points !== undefined;
+  const isPast = !!(question as any).isPastQuestion;
+  const pastYear = (question as any).pastQuestionYear;
+  const pastSession = (question as any).pastQuestionSession;
+
+  return (
+    <Pressable
+      onPress={() => onToggle(question)}
+      style={[
+        styles.qRow,
+        isOn && styles.qRowOn,
+        isPast && { borderLeftWidth: 3, borderLeftColor: colors.warning },
+      ]}
+    >
+      <View style={[styles.check, isOn && styles.checkOn]}>
+        {isOn && <Text style={styles.checkMark}>✓</Text>}
+      </View>
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          {isPast && (
+            <View style={styles.pastBadge}>
+              <Text style={styles.pastBadgeText}>PAST {pastYear || ''}</Text>
+            </View>
+          )}
+          <Text style={styles.qText} numberOfLines={2}>
+            {question.questionText}
+          </Text>
+        </View>
+        <View style={styles.qMetaRow}>
+          <Text
+            style={[
+              styles.qDifficulty,
+              { color: difficultyColor[question.difficulty] || colors.textMuted },
+            ]}
+          >
+            {question.difficulty}
+          </Text>
+          <Text style={styles.qMeta}>· {question.points} pt</Text>
+          {!!question.subject && <Text style={styles.qMeta}>· {question.subject}</Text>}
+          {!!pastSession && <Text style={styles.qMeta}>· {pastSession}</Text>}
+        </View>
+        {isOn && (
+          <View style={styles.pointsRow}>
+            <Text style={styles.pointsLabel}>Points:</Text>
+            <Pressable
+              onPress={() => onChangePoints(question._id, String((points || 1) - 1))}
+              style={styles.pointsBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Decrease points for ${question.questionText}`}
+            >
+              <Text style={styles.pointsBtnText}>−</Text>
+            </Pressable>
+            <Text style={styles.pointsValue}>{points}</Text>
+            <Pressable
+              onPress={() => onChangePoints(question._id, String((points || 1) + 1))}
+              style={styles.pointsBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Increase points for ${question.questionText}`}
+            >
+              <Text style={styles.pointsBtnText}>+</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
+    </Pressable>
+  );
+});
+
 function Toggle({
   label,
   value,
@@ -728,7 +826,7 @@ function Toggle({
   onChange: (v: boolean) => void;
 }) {
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.toggleRow}>
       <Text style={styles.toggleLabel}>{label}</Text>
@@ -805,6 +903,33 @@ const makeStyles = (colors: Colors) =>
   qMetaRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' },
   qDifficulty: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
   qMeta: { fontSize: 12, color: colors.textMuted },
+  pastBadge: {
+    backgroundColor: colors.warningLight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  pastBadgeText: { fontSize: 9, fontWeight: '800', color: colors.warning },
+  pointsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  pointsLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
+  pointsBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pointsBtnText: { fontSize: 14, fontWeight: '800', color: colors.text },
+  pointsValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    minWidth: 16,
+    textAlign: 'center',
+  },
   subjectRow: { gap: spacing.sm, marginTop: spacing.xs, marginBottom: spacing.md },
   chip: {
     paddingHorizontal: spacing.md,

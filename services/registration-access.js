@@ -2,16 +2,24 @@ const jwt = require('jsonwebtoken');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
 const paystack = require('./paystack');
+const { findSettledPayment, pendingPaymentHint } = require('./payment-access');
 const { getPlatformConfig, sanitizePlatformConfig } = require('./platform-config');
 
+/**
+ * True once the one-time registration fee has settled.
+ *
+ * Goes through findSettledPayment so a pending record that Paystack has
+ * actually charged is reconciled here too — otherwise a student who paid but
+ * whose ?reference was lost on the way back from checkout would be asked to
+ * pay again at every login attempt.
+ */
 async function hasPaidRegistration(studentId) {
   if (!studentId) return false;
-  const payment = await Payment.findOne({
-    student: studentId,
+  const settled = await findSettledPayment({
+    studentId,
     purpose: 'registration',
-    status: 'paid',
   });
-  return Boolean(payment);
+  return Boolean(settled);
 }
 
 function createdBeforeActivation(user, activatedAt) {
@@ -70,7 +78,7 @@ async function resolveRegistrationPaymentToken(token) {
   }
 }
 
-function buildRegistrationPaymentRequiredPayload(user, requirement, message) {
+async function buildRegistrationPaymentRequiredPayload(user, requirement, message) {
   return {
     message: message || 'Registration fee payment is required before you can sign in.',
     paymentRequired: true,
@@ -78,6 +86,8 @@ function buildRegistrationPaymentRequiredPayload(user, requirement, message) {
     amount: requirement.amount,
     currency: requirement.currency,
     paymentToken: createRegistrationPaymentToken(user),
+    // Resume an interrupted checkout instead of charging a second time.
+    ...(await pendingPaymentHint({ studentId: user._id, purpose: 'registration' })),
   };
 }
 

@@ -1,11 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, EmptyState, ErrorNote, Loading } from '../../components/ui';
 import { attemptsApi, configApi } from '../../api/endpoints';
 import { ApiError } from '../../api/client';
 import { useDialog } from '../../components/Dialog';
-import { formatFee, initiatePayment, openCheckout, verifyPayment } from '../../utils/payments';
+import {
+  confirmPayment,
+  formatFee,
+  initiatePayment,
+  openCheckout,
+  recoverPaymentState,
+} from '../../utils/payments';
+import {
+  clearReturnedPaymentReference,
+  getReturnedPaymentReference,
+} from '../../utils/registration-payments';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
@@ -56,6 +66,8 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
     navigation.setOptions({ title: 'Exam review' });
   }, [navigation]);
 
+  const loadRef = useRef<(() => Promise<void>) | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -71,12 +83,44 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
         // Review fee not paid yet — show the paywall. The 402 body carries
         // the examId we need to start the payment: the review payload itself
         // is still locked at this point, so it can never come from `review`.
-        const data = e.data as { amount?: unknown; examId?: unknown } | undefined;
+        const data = e.data as
+          | {
+              amount?: unknown;
+              examId?: unknown;
+              pendingReference?: unknown;
+              pendingAuthorizationUrl?: unknown;
+            }
+          | undefined;
         const amount = Number(data?.amount);
         const examId =
           typeof data?.examId === 'string' ? data.examId : String(data?.examId ?? '');
+
+        // The student may already have paid and simply lost the confirmation
+        // (refresh, or a Paystack redirect that dropped ?reference). Check
+        // before showing a paywall that would charge them twice.
+        const returned = getReturnedPaymentReference();
+        if (returned) clearReturnedPaymentReference();
+
+        const settled = await confirmPayment(
+          { purpose: 'review', examId, attemptId },
+          returned
+        );
+        if (settled) {
+          void loadRef.current?.();
+          return;
+        }
+
         setPaywall({ amount: Number.isFinite(amount) ? amount : 0, examId });
         setReview(null);
+        // Resume an interrupted checkout instead of opening a second one.
+        if (typeof data?.pendingReference === 'string') {
+          setPendingRef(data.pendingReference);
+          setCheckoutUrl(
+            typeof data?.pendingAuthorizationUrl === 'string'
+              ? data.pendingAuthorizationUrl
+              : null
+          );
+        }
       } else {
         setError(e instanceof Error ? e.message : 'Could not load review.');
       }
@@ -85,28 +129,77 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
     }
   }, [attemptId]);
 
+  loadRef.current = load;
+
   useEffect(() => {
     void load();
   }, [load]);
 
-  // Confirm an opened Paystack checkout when the screen regains focus.
-  useEffect(() => {
-    if (!pendingRef) return;
-    let cancelled = false;
-    (async () => {
-      const paid = await verifyPayment(pendingRef);
-      if (cancelled) return;
+  /** "I've paid — confirm": reference first, then the reference-free lookup. */
+  const confirmReviewPayment = useCallback(async () => {
+    if (!paywall) return;
+    setBusy(true);
+    try {
+      const paid = await confirmPayment(
+        { purpose: 'review', examId: paywall.examId, attemptId },
+        pendingRef
+      );
       if (paid) {
         setPendingRef(null);
-        await dialog.notify('Payment successful 🎉', 'The answer review is now unlocked.');
+        setCheckoutUrl(null);
+        await dialog.notify('Payment successful 🎉', 'Review unlocked.');
         void load();
+        return;
       }
-    })();
+      await dialog.notify(
+        'Not confirmed yet',
+        "We couldn't find the payment yet. Check the Paystack page, then try again."
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [attemptId, dialog, load, paywall, pendingRef]);
+
+  // While the paywall is up, re-check on focus/foreground so returning from
+  // Paystack unlocks the review without the student pressing anything.
+  useEffect(() => {
+    if (!paywall) return;
+
+    let cancelled = false;
+    const recheck = async () => {
+      const recovered = await recoverPaymentState({
+        purpose: 'review',
+        examId: paywall.examId,
+        attemptId,
+      });
+      if (cancelled) return;
+      if (recovered.paid) {
+        setPendingRef(null);
+        setCheckoutUrl(null);
+        void load();
+        return;
+      }
+      if (recovered.pendingReference) {
+        setPendingRef((prev) => prev ?? recovered.pendingReference);
+        setCheckoutUrl((prev) => prev ?? recovered.pendingCheckoutUrl);
+      }
+    };
+
+    void recheck();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void recheck();
+    });
+    const unsubscribeFocus = navigation.addListener('focus', () => {
+      void recheck();
+    });
+
     return () => {
       cancelled = true;
+      sub.remove();
+      unsubscribeFocus();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingRef]);
+  }, [attemptId, load, navigation, paywall]);
 
   /* ------------------------------------------------------------- paywall */
 
@@ -130,12 +223,13 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
         void load();
         return;
       }
-      // Only show the pending state after a real checkout URL has been
-      // returned and the browser has been sent to Paystack. openCheckout()
-      // throws when Paystack did not provide a URL.
+      // Record the pending state BEFORE navigating: on web openCheckout()
+      // replaces the current page, so anything set after it may never run.
+      // Losing the reference here is what used to strand a paid student on
+      // the paywall. (The reference-free recovery above is the safety net.)
       setCheckoutUrl(outcome.authorizationUrl);
-      await openCheckout(outcome.authorizationUrl);
       setPendingRef(outcome.reference);
+      await openCheckout(outcome.authorizationUrl);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Payment could not be started.');
       setPendingRef(null);
@@ -179,20 +273,7 @@ export default function ExamReviewScreen({ route, navigation }: Props) {
                   title="I've paid — confirm"
                   loading={busy}
                   style={{ marginTop: spacing.sm }}
-                  onPress={async () => {
-                    const paid = await verifyPayment(pendingRef);
-                    if (paid) {
-                      setPendingRef(null);
-                      setCheckoutUrl(null);
-                      await dialog.notify('Payment successful 🎉', 'Review unlocked.');
-                      void load();
-                    } else {
-                      await dialog.notify(
-                        'Not confirmed yet',
-                        "We couldn't find the payment yet. Check the Paystack page, then try again."
-                      );
-                    }
-                  }}
+                  onPress={() => void confirmReviewPayment()}
                 />
               </>
             ) : (

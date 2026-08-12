@@ -49,12 +49,33 @@ export interface InitiatePaymentResult {
   message: string;
   payment: Payment;
   authorizationUrl: string | null;
+  /** True when the server recognised the item as already settled. */
+  paid?: boolean;
   devMode: boolean;
 }
 
 export interface VerifyPaymentResult {
   payment: Payment;
   paid: boolean;
+}
+
+/** A checkout that was opened but has not settled yet. */
+export interface PendingPaymentInfo {
+  reference: string;
+  amount: number;
+  currency: string;
+  authorizationUrl: string | null;
+}
+
+/**
+ * Reference-free payment lookup: "has this student paid for THIS item?".
+ * Used to restore paid state after a refresh, when the Paystack reference is
+ * no longer in the URL.
+ */
+export interface PaymentStatusResult {
+  paid: boolean;
+  payment: Payment | null;
+  pending: PendingPaymentInfo | null;
 }
 
 /** One entry in the paid past-questions library. */

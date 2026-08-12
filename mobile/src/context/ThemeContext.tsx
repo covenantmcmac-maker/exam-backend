@@ -115,3 +115,35 @@ export function useTheme(): ThemeContextValue {
 export function useColors(): Colors {
   return useTheme().colors;
 }
+
+/**
+ * Per-palette StyleSheet cache.
+ *
+ * `useMemo(() => makeStyles(colors), [colors])` is memoised per COMPONENT
+ * INSTANCE, so a list that renders N rows builds N identical StyleSheets. On
+ * the exam builder (one row per question in the bank) that was a real cost on
+ * every render.
+ *
+ * Keying on the makeStyles function and then on the colors object means every
+ * instance of a component shares one StyleSheet per theme, built once. The
+ * outer map is weak so unmounted screens' styles can be collected; the inner
+ * one is weak on the colors object, which is itself memoised per theme.
+ */
+const styleCache = new WeakMap<object, WeakMap<Colors, unknown>>();
+
+export function useThemedStyles<T>(makeStyles: (colors: Colors) => T): T {
+  const colors = useColors();
+
+  let perPalette = styleCache.get(makeStyles);
+  if (!perPalette) {
+    perPalette = new WeakMap();
+    styleCache.set(makeStyles, perPalette);
+  }
+
+  let styles = perPalette.get(colors) as T | undefined;
+  if (!styles) {
+    styles = makeStyles(colors);
+    perPalette.set(colors, styles as object);
+  }
+  return styles;
+}

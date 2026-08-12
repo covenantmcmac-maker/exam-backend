@@ -5,7 +5,12 @@ const ExamAttempt = require('../models/ExamAttempt');
 const Payment = require('../models/Payment');
 const { auth, optionalAuth } = require('../middleware/auth');
 const paystack = require('../services/paystack');
-const { getPricing } = require('../services/payment-access');
+const {
+  buildPaymentFilter,
+  findSettledPayment,
+  getPricing,
+  reconcilePendingPayment,
+} = require('../services/payment-access');
 const {
   buildRegistrationPaymentRequiredPayload,
   getRegistrationRequirement,
@@ -177,6 +182,7 @@ router.post('/initiate', optionalAuth, async (req, res) => {
             status: 'paid',
           },
           authorizationUrl: null,
+          paid: true,
           devMode: paystack.isDevMode(),
         });
       }
@@ -203,22 +209,35 @@ router.post('/initiate', optionalAuth, async (req, res) => {
       }
     }
 
-    const pendingFilter = purpose === 'registration'
-      ? {
-          student: user._id,
-          purpose,
-          status: 'pending',
-        }
-      : {
-          student: user._id,
-          exam: examId,
-          purpose,
-          attempt: purpose === 'review' ? attemptId : null,
-          status: 'pending',
-        };
+    const itemKey = {
+      studentId: user._id,
+      purpose,
+      examId: purpose === 'registration' ? null : examId,
+      attemptId: purpose === 'review' ? attemptId : null,
+    };
 
-    const existing = await Payment.findOne(pendingFilter).sort({ createdAt: -1 });
+    // SETTLED FIRST. findSettledPayment also reconciles a stale `pending`
+    // record against Paystack, so a student who already paid but whose
+    // confirmation never reached us is recognised here instead of being sent
+    // back to checkout for a second charge.
+    const alreadyPaid = await findSettledPayment(itemKey);
+    if (alreadyPaid) {
+      return res.json({
+        message: 'Already paid',
+        payment: alreadyPaid,
+        authorizationUrl: null,
+        paid: true,
+        devMode: paystack.isDevMode(),
+      });
+    }
+
     const metadata = makeMetadata({ purpose, exam, attemptId, user });
+
+    // Genuinely unpaid: reuse the existing pending record (same reference =
+    // same Paystack transaction = no double charge).
+    const existing = await Payment.findOne(
+      buildPaymentFilter({ ...itemKey, status: 'pending' })
+    ).sort({ createdAt: -1 });
 
     if (existing) {
       const gateway = await refreshPendingGateway(existing, {
@@ -232,31 +251,8 @@ router.post('/initiate', optionalAuth, async (req, res) => {
         payment: existing,
         authorizationUrl:
           gateway.authorizationUrl || existing.providerDetails?.authorizationUrl || null,
+        paid: false,
         devMode: gateway.devMode,
-      });
-    }
-
-    const paidFilter = purpose === 'registration'
-      ? {
-          student: user._id,
-          purpose,
-          status: 'paid',
-        }
-      : {
-          student: user._id,
-          exam: examId,
-          purpose,
-          attempt: purpose === 'review' ? attemptId : null,
-          status: 'paid',
-        };
-
-    const alreadyPaid = await Payment.findOne(paidFilter);
-    if (alreadyPaid) {
-      return res.json({
-        message: 'Already paid',
-        payment: alreadyPaid,
-        authorizationUrl: null,
-        devMode: paystack.isDevMode(),
       });
     }
 
@@ -290,6 +286,7 @@ router.post('/initiate', optionalAuth, async (req, res) => {
         : 'Payment initiated — complete it on Paystack',
       payment,
       authorizationUrl: gateway.authorizationUrl,
+      paid: false,
       devMode: gateway.devMode,
     });
   } catch (error) {
@@ -359,28 +356,81 @@ router.get('/:reference/verify', optionalAuth, async (req, res) => {
       return res.json({ payment, paid: true });
     }
 
-    if (paystack.isDevMode()) {
-      return res.json({ payment, paid: payment.status === 'paid' });
-    }
-
-    const result = await paystack.verify(payment.reference);
-    if (result.paid) {
-      payment.status = 'paid';
-      payment.paidAt = result.paidAt ? new Date(result.paidAt) : new Date();
-      payment.providerDetails = {
-        ...(payment.providerDetails || {}),
-        transactionId: result.transactionId,
-        gatewayResponse: result.gatewayResponse,
-        gatewayStatus: result.status,
-      };
-      await payment.save();
-      return res.json({ payment, paid: true });
-    }
-
-    res.json({ payment, paid: false });
+    // reconcilePendingPayment is the single place that asks Paystack and
+    // persists the answer (dev mode, terminal states and gateway errors all
+    // short-circuit inside it).
+    const settled = await reconcilePendingPayment(payment);
+    res.json({ payment: settled, paid: settled.status === 'paid' });
   } catch (error) {
     console.error('Verify payment error:', error);
     res.status(500).json({ message: 'Error verifying payment: ' + error.message });
+  }
+});
+
+// ========================
+// PAYMENT STATUS FOR ONE ITEM
+// ========================
+// The reference-free recovery path. After a refresh (or a return from
+// Paystack that lost its ?reference) the client knows *what* it was buying
+// but not the reference, so it asks about the item instead. Reconciles any
+// pending charge against Paystack, so a confirmed payment unlocks access
+// immediately on reload.
+//
+// GET /api/payments/status?purpose=entry&examId=…
+// GET /api/payments/status?purpose=review&examId=…&attemptId=…
+// GET /api/payments/status?purpose=registration&paymentToken=…
+router.get('/status', optionalAuth, async (req, res) => {
+  try {
+    const { purpose, examId, attemptId } = req.query;
+
+    if (!['entry', 'review', 'registration'].includes(purpose)) {
+      return res.status(400).json({ message: 'A valid purpose is required.' });
+    }
+
+    const user = await resolvePaymentUser(
+      req,
+      purpose,
+      req.query.paymentToken || req.header('x-payment-token')
+    );
+    if (!user) {
+      return res.status(401).json({ message: 'Please sign in to check this payment.' });
+    }
+
+    if (purpose !== 'registration' && !examId) {
+      return res.status(400).json({ message: 'examId is required for this purpose.' });
+    }
+
+    const itemKey = {
+      studentId: user._id,
+      purpose,
+      examId: purpose === 'registration' ? null : examId,
+      attemptId: purpose === 'review' ? attemptId || null : null,
+    };
+
+    const settled = await findSettledPayment(itemKey);
+    if (settled) {
+      return res.json({ paid: true, payment: settled, pending: null });
+    }
+
+    const pending = await Payment.findOne(
+      buildPaymentFilter({ ...itemKey, status: 'pending' })
+    ).sort({ createdAt: -1 });
+
+    res.json({
+      paid: false,
+      payment: null,
+      pending: pending
+        ? {
+            reference: pending.reference,
+            amount: pending.amount,
+            currency: pending.currency,
+            authorizationUrl: pending.providerDetails?.authorizationUrl || null,
+          }
+        : null,
+    });
+  } catch (error) {
+    console.error('Payment status error:', error);
+    res.status(500).json({ message: 'Error checking payment status' });
   }
 });
 
@@ -412,8 +462,11 @@ router.post('/webhook/paystack', (req, res) => {
     if (!payment) return;
     if (payment.status === 'paid') return;
 
+    // Underpayment is a rejection; an exact match or an overpayment settles.
+    // (Strict equality here would lock out a student who was charged a
+    // rounded-up amount, and there is no recovery path from `failed`.)
     const expectedAmount = Math.round(payment.amount * 100);
-    if (data.amount !== undefined && Number(data.amount) !== expectedAmount) {
+    if (data.amount !== undefined && Number(data.amount) < expectedAmount) {
       payment.status = 'failed';
       await payment.save();
       console.error(

@@ -24,8 +24,10 @@ export async function initiatePayment(
 ): Promise<PaymentOutcome> {
   const res = await paymentsApi.initiate({ examId, purpose, attemptId });
 
-  if (res.payment?.status === 'paid') {
-    return { paid: true, reference: res.payment.reference, authorizationUrl: null };
+  // `paid` is the server's explicit "this item is already settled" flag; the
+  // status check is the older signal and stays as a fallback.
+  if (res.paid || res.payment?.status === 'paid') {
+    return { paid: true, reference: res.payment?.reference ?? null, authorizationUrl: null };
   }
 
   if (res.devMode) {
@@ -52,8 +54,8 @@ export async function initiateRegistrationPayment(
     paymentToken,
   });
 
-  if (res.payment?.status === 'paid') {
-    return { paid: true, reference: res.payment.reference, authorizationUrl: null };
+  if (res.paid || res.payment?.status === 'paid') {
+    return { paid: true, reference: res.payment?.reference ?? null, authorizationUrl: null };
   }
 
   if (res.devMode && res.payment.reference) {
@@ -138,6 +140,73 @@ export async function verifyPayment(reference: string, paymentToken?: string): P
   } catch {
     return false;
   }
+}
+
+/** What is being bought. Enough to look a payment up without a reference. */
+export interface PaymentItem {
+  purpose: PaymentPurpose;
+  examId?: string;
+  attemptId?: string;
+  paymentToken?: string;
+}
+
+export interface PaymentRecovery {
+  /** True when this item is already settled — unlock immediately. */
+  paid: boolean;
+  /** A checkout that was opened but has not settled: offer resume, not re-pay. */
+  pendingReference: string | null;
+  pendingCheckoutUrl: string | null;
+}
+
+const NOTHING_RECOVERED: PaymentRecovery = {
+  paid: false,
+  pendingReference: null,
+  pendingCheckoutUrl: null,
+};
+
+/**
+ * Restore payment state for one item after a refresh / redirect return.
+ *
+ * Two things can be lost when the browser navigates away to Paystack and back:
+ * the in-memory pending reference, and the ?reference query param (dropped by
+ * a redirect, a PWA cold start, or the user just hitting reload). Keying the
+ * lookup on the ITEM instead of the reference survives both, and the server
+ * reconciles any pending charge against Paystack before answering — so a
+ * confirmed payment unlocks access on the very next load.
+ *
+ * Never throws: a network failure degrades to "nothing recovered" and the
+ * normal paywall is shown.
+ */
+export async function recoverPaymentState(item: PaymentItem): Promise<PaymentRecovery> {
+  try {
+    const res = await paymentsApi.status(item);
+    if (res.paid) {
+      return { paid: true, pendingReference: null, pendingCheckoutUrl: null };
+    }
+    return {
+      paid: false,
+      pendingReference: res.pending?.reference ?? null,
+      pendingCheckoutUrl: res.pending?.authorizationUrl ?? null,
+    };
+  } catch {
+    return NOTHING_RECOVERED;
+  }
+}
+
+/**
+ * Confirm a payment when coming back from Paystack.
+ *
+ * Tries the returned reference first (fastest, and the only signal available
+ * before the gateway has told the server anything), then falls back to the
+ * item lookup. Either path succeeding means the student has paid.
+ */
+export async function confirmPayment(
+  item: PaymentItem,
+  reference?: string | null
+): Promise<boolean> {
+  if (reference && (await verifyPayment(reference, item.paymentToken))) return true;
+  const recovered = await recoverPaymentState(item);
+  return recovered.paid;
 }
 
 /** "₦500" style label. */

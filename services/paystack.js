@@ -14,7 +14,9 @@
  * dev-complete endpoint is dead in production.
  */
 
-const PAYSTACK_BASE = 'https://api.paystack.co';
+// Overridable only so the integration tests can point the gateway at a local
+// fake Paystack. Production never sets PAYSTACK_BASE_URL.
+const PAYSTACK_BASE = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
 const CURRENCY = process.env.PAYMENT_CURRENCY || 'NGN';
 
 /** Whole-unit fees → kobo (Paystack's subunit). */
