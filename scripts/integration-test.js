@@ -110,6 +110,56 @@ async function main() {
     const adminTok = admin.body.token;
     const teacherTok = teacher.body.token;
 
+    console.log('\nAdmin user directory pagination, search, sort + deletion');
+    const usersPage1 = await req('GET', '/api/admin/users?page=1&limit=2&sort=name_asc', { token: adminTok });
+    const usersPage2 = await req('GET', '/api/admin/users?page=2&limit=2&sort=name_asc', { token: adminTok });
+    check(
+      'admin users returns deliberate two-user pages with total metadata',
+      usersPage1.status === 200 && usersPage1.body.users.length === 2 &&
+        usersPage1.body.total === 4 && usersPage1.body.pages === 2 &&
+        usersPage2.body.users.length === 2,
+      JSON.stringify({ page1: usersPage1.body, page2: usersPage2.body })
+    );
+    check(
+      'A-Z sorting is global across pages',
+      [...usersPage1.body.users, ...usersPage2.body.users].map((u) => u.name).join('|') ===
+        'Boss|Legacy Student|Ms Ada|Sam',
+      JSON.stringify([...usersPage1.body.users, ...usersPage2.body.users].map((u) => u.name))
+    );
+
+    const usersDesc = await req('GET', '/api/admin/users?page=1&limit=2&sort=name_desc', { token: adminTok });
+    check(
+      'Z-A sorting is performed before pagination',
+      usersDesc.body.users.map((u) => u.name).join('|') === 'Sam|Ms Ada',
+      JSON.stringify(usersDesc.body.users)
+    );
+
+    const defaultFirstPage = await req('GET', '/api/admin/users?page=1&limit=2&sort=newest', { token: adminTok });
+    const serverSearch = await req('GET', '/api/admin/users?page=1&limit=2&sort=newest&search=Boss', { token: adminTok });
+    check(
+      'server search finds a user outside the current page',
+      !defaultFirstPage.body.users.some((u) => u.name === 'Boss') &&
+        serverSearch.body.total === 1 && serverSearch.body.users[0]?.name === 'Boss',
+      JSON.stringify({ firstPage: defaultFirstPage.body, search: serverSearch.body })
+    );
+    check(
+      'admin user responses never expose passwords',
+      [...usersPage1.body.users, ...usersPage2.body.users].every((u) => !Object.prototype.hasOwnProperty.call(u, 'password'))
+    );
+
+    const disposable = await req('POST', '/api/admin/users', {
+      token: adminTok,
+      body: { name: 'Temporary Teacher', email: 'temporary-delete@x.com', role: 'teacher' },
+    });
+    const hardDelete = await req('DELETE', `/api/admin/users/${disposable.body.user.id}`, { token: adminTok });
+    const deletedSearch = await req('GET', '/api/admin/users?search=temporary-delete%40x.com', { token: adminTok });
+    check(
+      'DELETE /api/admin/users/:id hard-deletes the user document',
+      disposable.status === 201 && hardDelete.status === 200 &&
+        deletedSearch.body.total === 0 && deletedSearch.body.users.length === 0,
+      JSON.stringify({ disposable: disposable.body, deleted: hardDelete.body, search: deletedSearch.body })
+    );
+
     console.log('\nPublic config + admin pricing control');
     const cfgFree = await req('GET', '/api/config');
     check('config defaults to free registration', cfgFree.body.studentRegistrationFee === 0 && cfgFree.body.studentRegistrationFeeActive === false);

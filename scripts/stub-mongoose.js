@@ -51,8 +51,12 @@ function matches(doc, filter) {
         } else if (op === '$in') {
           if (!operand.some((o) => looseEq(value, o))) return false;
         } else if (op === '$regex') {
-          const re = operand instanceof RegExp ? operand : new RegExp(operand, 'i');
+          const flags = typeof cond.$options === 'string' ? cond.$options : 'i';
+          const re = operand instanceof RegExp ? operand : new RegExp(operand, flags);
           if (!re.test(String(value ?? ''))) return false;
+        } else if (op === '$options') {
+          // Consumed alongside $regex above.
+          continue;
         } else if (op === '$eq') {
           if (!looseEq(value, operand)) return false;
         } else if (op === '$exists') {
@@ -379,6 +383,7 @@ function makeModel(name, schemaDef) {
     const state = { filter, select: null, sort: null, skip: 0, limit: null, populate: [] };
     const chain = {
       select: (s) => { state.select = s; return chain; },
+      collation: () => chain,
       sort: (s) => { state.sort = s; return chain; },
       skip: (n) => { state.skip = n; return chain; },
       limit: (n) => { state.limit = n; return chain; },

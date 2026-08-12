@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   RefreshControl,
@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Badge, Button, Card, Field, Loading, StatTile } from '../../components/ui';
 import { adminApi, AdminPastStats } from '../../api/endpoints';
+import type { AdminUserSort } from '../../api/endpoints';
 import { formatFee } from '../../utils/payments';
 import { buildCsv, downloadCsv } from '../../utils/csv';
 import { useAuth } from '../../context/AuthContext';
@@ -42,6 +43,14 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'past', label: 'Past Qs 📚' },
 ];
 
+const USER_PAGE_SIZE = 50;
+const USER_SEARCH_DEBOUNCE_MS = 400;
+const USER_SORTS: { value: AdminUserSort; label: string }[] = [
+  { value: 'newest', label: 'Newest' },
+  { value: 'name_asc', label: 'A–Z' },
+  { value: 'name_desc', label: 'Z–A' },
+];
+
 const makeRoleTint = (colors: Colors): Record<string, { fg: string; bg: string }> => ({
   admin: { fg: colors.danger, bg: colors.dangerLight },
   teacher: { fg: colors.primary, bg: colors.primaryLight },
@@ -61,6 +70,13 @@ export default function AdminPanelScreen() {
   const [registrationFeeInput, setRegistrationFeeInput] = useState('0');
   const [configBusy, setConfigBusy] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
+  const [userTotal, setUserTotal] = useState(0);
+  const [userPages, setUserPages] = useState(0);
+  const [userPage, setUserPage] = useState(0);
+  const [userSort, setUserSort] = useState<AdminUserSort>('newest');
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [usersLoadingMore, setUsersLoadingMore] = useState(false);
+  const userRequestId = useRef(0);
   const [exams, setExams] = useState<Exam[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -71,6 +87,7 @@ export default function AdminPanelScreen() {
     registrationCount: 0,
   });
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
@@ -84,12 +101,57 @@ export default function AdminPanelScreen() {
   const [pastSelected, setPastSelected] = useState<Record<string, true>>({});
   const [pastLoading, setPastLoading] = useState(false);
 
+  const loadUsers = useCallback(async (page = 1, append = false) => {
+    const requestId = ++userRequestId.current;
+    if (append) {
+      setUsersLoadingMore(true);
+    } else {
+      setUsersLoading(true);
+      setUsers([]);
+      setUserTotal(0);
+      setUserPages(0);
+      setUserPage(0);
+    }
+
+    try {
+      const result = await adminApi.users({
+        page,
+        limit: USER_PAGE_SIZE,
+        sort: userSort,
+        search: debouncedSearch || undefined,
+      });
+      // Search/sort can change while a request is in flight. Only the newest
+      // response is allowed to replace or append to the visible directory.
+      if (requestId !== userRequestId.current) return;
+
+      setUsers((previous) => {
+        if (!append) return result.users;
+        const seen = new Set(previous.map((u) => String(u._id || u.id)));
+        return [
+          ...previous,
+          ...result.users.filter((u) => !seen.has(String(u._id || u.id))),
+        ];
+      });
+      setUserTotal(result.total);
+      setUserPages(result.pages);
+      setUserPage(page);
+    } catch (err) {
+      if (requestId === userRequestId.current) {
+        void dialog.notify('Error', err instanceof Error ? err.message : 'Could not load users.');
+      }
+    } finally {
+      if (requestId === userRequestId.current) {
+        setUsersLoading(false);
+        setUsersLoadingMore(false);
+      }
+    }
+  }, [debouncedSearch, dialog, userSort]);
+
   const load = useCallback(async () => {
     try {
-      const [s, cfg, u, e, a, p] = await Promise.all([
+      const [s, cfg, e, a, p] = await Promise.all([
         adminApi.stats(),
         adminApi.config(),
-        adminApi.users(),
         adminApi.exams(),
         adminApi.attempts(),
         adminApi.payments(),
@@ -97,7 +159,6 @@ export default function AdminPanelScreen() {
       setStats(s);
       setPlatformConfig(cfg);
       setRegistrationFeeInput(String(cfg.studentRegistrationFee ?? 0));
-      setUsers(u.users);
       setExams(e);
       setAttempts(a);
       setPayments(p.payments);
@@ -135,6 +196,18 @@ export default function AdminPanelScreen() {
   }, [load]);
 
   useEffect(() => {
+    const timer = setTimeout(
+      () => setDebouncedSearch(search.trim()),
+      USER_SEARCH_DEBOUNCE_MS
+    );
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    void loadUsers(1, false);
+  }, [loadUsers]);
+
+  useEffect(() => {
     if (tab === 'past') {
       void loadPast();
     }
@@ -142,8 +215,9 @@ export default function AdminPanelScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await load();
-    if (tab === 'past') await loadPast();
+    const requests: Promise<void>[] = [load(), loadUsers(1, false)];
+    if (tab === 'past') requests.push(loadPast());
+    await Promise.all(requests);
     setRefreshing(false);
   };
 
@@ -164,6 +238,21 @@ export default function AdminPanelScreen() {
     try {
       await adminApi.changeRole(id, next);
       setUsers((prev) => prev.map((x) => ((x._id || x.id) === id ? { ...x, role: next } : x)));
+      setStats((previous: (AdminStats & any) | null) => {
+        if (!previous) return previous;
+        const countKey = (role: Role) => role === 'student'
+          ? 'totalStudents'
+          : role === 'teacher'
+            ? 'totalTeachers'
+            : 'totalAdmins';
+        const oldKey = countKey(u.role);
+        const newKey = countKey(next);
+        return {
+          ...previous,
+          [oldKey]: Math.max(0, (previous[oldKey] || 0) - 1),
+          [newKey]: (previous[newKey] || 0) + 1,
+        };
+      });
     } catch (e) {
       void dialog.notify('Error', e instanceof Error ? e.message : 'Update failed.');
     }
@@ -179,7 +268,22 @@ export default function AdminPanelScreen() {
     if (!ok) return;
     try {
       await adminApi.removeUser(id);
-      setUsers((prev) => prev.filter((x) => (x._id || x.id) !== id));
+      // Offset pages shift after a deletion. Restarting at page one prevents a
+      // user at the old page boundary from being skipped by the next load.
+      await loadUsers(1, false);
+      setStats((previous: (AdminStats & any) | null) => {
+        if (!previous) return previous;
+        const roleCountKey = u.role === 'student'
+          ? 'totalStudents'
+          : u.role === 'teacher'
+            ? 'totalTeachers'
+            : 'totalAdmins';
+        return {
+          ...previous,
+          totalUsers: Math.max(0, (previous.totalUsers || 0) - 1),
+          [roleCountKey]: Math.max(0, (previous[roleCountKey] || 0) - 1),
+        };
+      });
     } catch (e) {
       void dialog.notify('Error', e instanceof Error ? e.message : 'Delete failed.');
     }
@@ -347,7 +451,7 @@ export default function AdminPanelScreen() {
     const totalStudents = stats?.totalStudents ?? users.filter((u) => u.role === 'student').length;
     const ok = await dialog.confirm(
       'Reset all student passwords?',
-      `This will reset ${totalStudents} student accounts to 123456. Are you sure?`,
+      `This will reset all ${totalStudents} student accounts to 123456 across every page and search result — not only the ${users.length} user(s) currently loaded. Are you sure?`,
       { confirmLabel: 'Reset all', destructive: true }
     );
     if (!ok) return;
@@ -434,10 +538,8 @@ export default function AdminPanelScreen() {
     }
   };
 
-  const term = search.trim().toLowerCase();
-  const visibleUsers = term
-    ? users.filter((u) => u.name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term))
-    : users;
+  const hasMoreUsers = userPage < userPages && users.length < userTotal;
+  const searchIsDebouncing = search.trim() !== debouncedSearch;
 
   const subjects = useMemo(() => {
     const map = new Map<string, number>();
@@ -640,8 +742,8 @@ export default function AdminPanelScreen() {
                 Reset all student passwords to 123456 so old guest-code users can sign in again.
               </Text>
               <Text style={styles.sectionNote}>
-                This will affect about {stats?.totalStudents ?? 0} student account(s). Teachers and
-                admins are excluded.
+                This affects all {stats?.totalStudents ?? 0} student account(s) across every page and
+                search result, not only the loaded list. Teachers and admins are excluded.
               </Text>
               <Button
                 title="Reset all student passwords to 123456"
@@ -651,8 +753,38 @@ export default function AdminPanelScreen() {
               />
             </Card>
 
-            <Field value={search} onChangeText={setSearch} placeholder="Search users…" />
-            {visibleUsers.map((u) => {
+            <Text style={styles.sectionLabel}>User directory</Text>
+            <Field value={search} onChangeText={setSearch} placeholder="Search all users…" />
+            <View style={styles.userSortRow}>
+              <Text style={styles.userSortLabel}>Sort</Text>
+              {USER_SORTS.map((option) => {
+                const active = userSort === option.value;
+                return (
+                  <Pressable
+                    key={option.value}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    onPress={() => setUserSort(option.value)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {option.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={styles.showing}>
+              {debouncedSearch
+                ? `Loaded ${users.length} of ${userTotal} matching users (${stats?.totalUsers ?? userTotal} total accounts)`
+                : `Loaded ${users.length} of ${userTotal} users`}
+            </Text>
+            {searchIsDebouncing && (
+              <Text style={styles.userSearchStatus}>Waiting to search all users…</Text>
+            )}
+
+            {usersLoading && <Loading text="Loading users…" />}
+            {!usersLoading && users.map((u) => {
               const id = u._id || u.id;
               const tint = roleTint[u.role] || roleTint.student;
               const isMe = id === myId;
@@ -678,6 +810,21 @@ export default function AdminPanelScreen() {
                 </Card>
               );
             })}
+            {!usersLoading && users.length === 0 && (
+              <Card>
+                <Text style={styles.emptyText}>
+                  {debouncedSearch ? 'No users match this search.' : 'No users found.'}
+                </Text>
+              </Card>
+            )}
+            {!usersLoading && hasMoreUsers && (
+              <Button
+                title={`Load more (${userTotal - users.length} remaining)`}
+                variant="secondary"
+                loading={usersLoadingMore}
+                onPress={() => void loadUsers(userPage + 1, true)}
+              />
+            )}
           </>
         )}
 
@@ -969,6 +1116,9 @@ const makeStyles = (colors: Colors) =>
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
   chipTextActive: { color: colors.white },
+  userSortRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  userSortLabel: { fontSize: 13, color: colors.textMuted, fontWeight: '700', marginRight: spacing.xs },
+  userSearchStatus: { fontSize: 12, color: colors.primary, marginBottom: spacing.sm },
   bulkBar: { marginTop: spacing.md, padding: spacing.md, backgroundColor: colors.card, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: spacing.md },
   bulkText: { fontSize: 13, fontWeight: '700', color: colors.text },
   showing: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm, marginBottom: spacing.sm },

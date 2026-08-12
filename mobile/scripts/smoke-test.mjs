@@ -442,11 +442,68 @@ try {
     Array.isArray(adminPayments.payments) && typeof adminPayments.totals?.registrationCount === 'number'
   );
 
-  const adminUsers = await adminApi.users();
-  check('admin users returns list', adminUsers.users.length === 4);
+  const adminUsers = await adminApi.users({ page: 1, limit: 2, sort: 'name_asc' });
+  check(
+    'admin users returns a deliberate first page + total metadata',
+    adminUsers.users.length === 2 && adminUsers.total === 4 && adminUsers.pages === 2
+  );
+  check(
+    'admin users A-Z sort is applied before pagination',
+    adminUsers.users.map((u) => u.name).join('|') === 'Ada Teacher|Admin User'
+  );
 
-  const singleReset = await adminApi.resetUserPassword('u_student');
-  check('admin can reset one password to 123456', singleReset.user.mustChangePassword === true);
+  const adminUsersPage2 = await adminApi.users({ page: 2, limit: 2, sort: 'name_asc' });
+  check(
+    'admin users can load the next page without duplicates',
+    adminUsersPage2.users.map((u) => u.name).join('|') === 'Existing Student|Sam Student' &&
+      [...adminUsers.users, ...adminUsersPage2.users].map((u) => u._id).length ===
+        new Set([...adminUsers.users, ...adminUsersPage2.users].map((u) => u._id)).size
+  );
+
+  const adminUsersDesc = await adminApi.users({ page: 1, limit: 2, sort: 'name_desc' });
+  check(
+    'admin users supports global Z-A sorting',
+    adminUsersDesc.users.map((u) => u.name).join('|') === 'Sam Student|Existing Student'
+  );
+
+  const searchedUsers = await adminApi.users({
+    search: 'existing@example.com',
+    page: 1,
+    limit: 2,
+    sort: 'newest',
+  });
+  check(
+    'admin user search runs against all mock users before pagination',
+    searchedUsers.total === 1 && searchedUsers.users[0]?.email === 'existing@example.com'
+  );
+
+  const adminScreen = readFileSync(
+    path.join(root, 'src/screens/admin/AdminPanelScreen.tsx'),
+    'utf8'
+  );
+  check(
+    'admin user UI debounces server search',
+    /USER_SEARCH_DEBOUNCE_MS\s*=\s*400/.test(adminScreen) &&
+      /setTimeout\([\s\S]*setDebouncedSearch/.test(adminScreen) &&
+      /search:\s*debouncedSearch/.test(adminScreen)
+  );
+  check(
+    'admin user UI exposes Load more and loaded/total counts',
+    /title=\{`Load more/.test(adminScreen) &&
+      /Loaded \$\{users\.length\} of \$\{userTotal\}/.test(adminScreen)
+  );
+  check(
+    'admin bulk reset explicitly applies beyond the visible page',
+    /across every page and search result/.test(adminScreen) &&
+      /not only the loaded list/.test(adminScreen)
+  );
+
+  const selectedPageUser = adminUsersPage2.users.find((u) => u._id === 'u_student');
+  const singleReset = await adminApi.resetUserPassword(selectedPageUser?._id || 'missing');
+  check(
+    'admin can reset the exact user selected from a later page',
+    singleReset.user._id === 'u_student' && singleReset.user.mustChangePassword === true
+  );
 
   const bulkReset = await adminApi.resetAllStudentPasswords();
   check('admin can bulk reset all student passwords', bulkReset.resetCount === 2);
@@ -470,6 +527,21 @@ try {
   check('requests without token are rejected', unauth);
 
   const callLog = await (await fetch(`${BASE}/__calls`)).json();
+  const pagedUserCall = callLog.find(
+    (c) => c.key === 'GET /api/admin/users' && c.query?.page === '2'
+  );
+  check(
+    'admin API forwards page, limit and sort query parameters',
+    pagedUserCall?.query?.limit === '2' && pagedUserCall?.query?.sort === 'name_asc'
+  );
+  const searchedUserCall = callLog.find(
+    (c) => c.key === 'GET /api/admin/users' && c.query?.search === 'existing@example.com'
+  );
+  check(
+    'admin API forwards backend search with pagination',
+    searchedUserCall?.query?.page === '1' && searchedUserCall?.query?.limit === '2'
+  );
+
   const protectedCalls = callLog.filter(
     (c) => c.key === 'GET /api/exams/my-exams' || c.key === 'POST /api/attempts/start'
   );
