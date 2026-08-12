@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Text } from 'react-native';
 import {
   NavigationContainer,
@@ -37,6 +37,10 @@ import AdminPanelScreen from '../screens/admin/AdminPanelScreen';
 
 import { paymentsApi } from '../api/endpoints';
 import { useDialog } from '../components/Dialog';
+import {
+  clearReturnedPaymentReference,
+  getReturnedPaymentReference,
+} from '../utils/registration-payments';
 
 import type {
   AuthStackParamList,
@@ -136,20 +140,35 @@ function TeacherFlow() {
 /**
  * On web, Paystack redirects the browser back to the app after payment with
  * ?reference=… in the URL. Verify it once so the user sees confirmation.
+ *
+ * This is the SIGNED-IN safety net only — the entry/review/registration
+ * screens each run their own, more specific recovery, because they know which
+ * item was being bought and can unlock the UI. This handler exists for the
+ * case where the redirect lands somewhere else entirely.
+ *
+ * Two details matter:
+ *
+ *   • It reads the reference through getReturnedPaymentReference(), which
+ *     caches it for the page load. The screens mount at the same time and
+ *     also need it; whichever component stripped the URL first used to leave
+ *     the others with nothing.
+ *
+ *   • It runs once per reference. Re-notifying on every re-render (or after
+ *     the screen already handled it) produced duplicate dialogs.
  */
 function PaymentRedirectHandler() {
   const dialog = useDialog();
   const { user } = useAuth();
+  const handledRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!user || typeof window === 'undefined' || !window.location?.search) return;
+    if (!user) return;
 
-    const params = new URLSearchParams(window.location.search);
-    const reference = params.get('reference') || params.get('trxref');
-    if (!reference) return;
+    const reference = getReturnedPaymentReference();
+    if (!reference || handledRef.current === reference) return;
+    handledRef.current = reference;
 
-    const clean = window.location.pathname + window.location.hash;
-    window.history.replaceState({}, '', clean);
+    clearReturnedPaymentReference();
 
     (async () => {
       try {
@@ -159,12 +178,11 @@ function PaymentRedirectHandler() {
             'Payment successful 🎉',
             'Your payment was confirmed. You can now continue with the exam.'
           );
-        } else {
-          await dialog.notify(
-            'Payment not confirmed yet',
-            'We are still waiting for your payment to be confirmed.'
-          );
         }
+        // Not-yet-confirmed is deliberately silent here: the screen that owns
+        // the purchase re-checks on focus and shows the accurate state. A
+        // global "not confirmed" toast fires spuriously while the more
+        // specific recovery is still in flight.
       } catch {
         /* Non-fatal */
       }

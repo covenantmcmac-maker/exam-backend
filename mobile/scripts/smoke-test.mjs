@@ -218,11 +218,48 @@ try {
     regInit.devMode === true && regInit.payment.reference === 'REG-MOCK-1'
   );
 
+  // Reference-free recovery: the app must be able to ask "did this get paid?"
+  // without still holding the reference, because Paystack's callback URL comes
+  // back to the app root and drops the query string.
+  const regPendingStatus = await paymentsApi.status({
+    purpose: 'registration',
+    paymentToken: regPaymentToken,
+  });
+  check(
+    'registration status reports the reusable pending charge',
+    regPendingStatus.paid === false && regPendingStatus.pending?.reference === 'REG-MOCK-1'
+  );
+  check(
+    'pending status carries a resume link so no second charge is created',
+    typeof regPendingStatus.pending?.authorizationUrl === 'string' &&
+      regPendingStatus.pending.authorizationUrl.length > 0
+  );
+
   const regDone = await paymentsApi.devComplete('REG-MOCK-1', regPaymentToken);
   check('registration dev-complete marks paid', regDone.payment.status === 'paid');
 
   const regVerified = await paymentsApi.verify('REG-MOCK-1', regPaymentToken);
   check('registration verify confirms the payment', regVerified.paid === true);
+
+  const regPaidStatus = await paymentsApi.status({
+    purpose: 'registration',
+    paymentToken: regPaymentToken,
+  });
+  check(
+    'registration status stays paid without a reference (survives refresh)',
+    regPaidStatus.paid === true && regPaidStatus.pending === null
+  );
+
+  let regStatusUnauth = null;
+  try {
+    await paymentsApi.status({ purpose: 'registration', paymentToken: 'wrong-token' });
+  } catch (e) {
+    regStatusUnauth = e;
+  }
+  check(
+    'registration status rejects a bad payment token',
+    regStatusUnauth instanceof ApiError && regStatusUnauth.status === 401
+  );
 
   const studentLogin = await authApi.login('student@example.com', 'secret');
   check('student can log in after registration payment', !!studentLogin.token && studentLogin.user.role === 'student');
@@ -302,11 +339,34 @@ try {
     init.devMode === true && init.payment.reference === 'PST-MOCK-1'
   );
 
+  const entryPending = await paymentsApi.status({ purpose: 'entry', examId: 'e2' });
+  check(
+    'entry status finds the pending charge to reuse',
+    entryPending.paid === false && entryPending.pending?.reference === 'PST-MOCK-1'
+  );
+
   const done = await paymentsApi.devComplete('PST-MOCK-1');
   check('dev-complete marks payment paid', done.payment.status === 'paid');
 
   const verified = await paymentsApi.verify('PST-MOCK-1');
   check('verify confirms the payment', verified.paid === true);
+
+  const entryPaid = await paymentsApi.status({ purpose: 'entry', examId: 'e2' });
+  check(
+    'entry status stays paid without a reference (survives refresh)',
+    entryPaid.paid === true && entryPaid.payment?.reference === 'PST-MOCK-1'
+  );
+
+  let entryStatusBadPurpose = null;
+  try {
+    await paymentsApi.status({ purpose: 'nonsense', examId: 'e2' });
+  } catch (e) {
+    entryStatusBadPurpose = e;
+  }
+  check(
+    'status rejects an unknown purpose',
+    entryStatusBadPurpose instanceof ApiError && entryStatusBadPurpose.status === 400
+  );
 
   const startedPaid = await attemptsApi.start('e2');
   check('paid paper can now be started', !!startedPaid.attempt);

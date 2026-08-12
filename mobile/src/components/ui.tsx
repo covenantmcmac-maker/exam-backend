@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -9,14 +9,21 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
-import { useColors } from '../context/ThemeContext';
+import { useColors, useThemedStyles } from '../context/ThemeContext';
 import { radius, shadow, spacing } from '../theme';
 import type { Colors } from '../theme';
 
-/** Shared themed styles for the UI kit, recomputed when the theme changes. */
+/**
+ * Shared themed styles for the UI kit.
+ *
+ * Goes through useThemedStyles so all Buttons/Cards/Fields on screen share a
+ * single StyleSheet per theme instead of each instance building its own. On
+ * list-heavy screens (the exam builder renders a row per question) that was a
+ * measurable per-render cost.
+ */
 function useUiStyles() {
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const styles = useThemedStyles(makeStyles);
   return { colors, styles };
 }
 

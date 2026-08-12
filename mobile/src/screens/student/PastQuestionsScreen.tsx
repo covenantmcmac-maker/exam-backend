@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Pressable,
   RefreshControl,
@@ -13,7 +14,17 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, ErrorNote, Field, Loading } from '../../components/ui';
 import { useDialog } from '../../components/Dialog';
 import { configApi, examsApi } from '../../api/endpoints';
-import { formatFee, initiatePayment, openCheckout, verifyPayment } from '../../utils/payments';
+import {
+  confirmPayment,
+  formatFee,
+  initiatePayment,
+  openCheckout,
+  recoverPaymentState,
+} from '../../utils/payments';
+import {
+  clearReturnedPaymentReference,
+  getReturnedPaymentReference,
+} from '../../utils/registration-payments';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
@@ -50,6 +61,10 @@ export default function PastQuestionsScreen({ navigation }: Props) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pendingRef, setPendingRef] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  // The exam the pending checkout belongs to. Needed for reference-free
+  // recovery: after a refresh the reference is gone, but the item is not.
+  const [pendingExamId, setPendingExamId] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   const symbol = config?.currencySymbol || '₦';
 
@@ -73,28 +88,89 @@ export default function PastQuestionsScreen({ navigation }: Props) {
     }, [load])
   );
 
-  // If a Paystack checkout was opened for this screen, confirm the payment
-  // whenever the screen regains focus (tab switch / app foreground).
+  const clearPending = useCallback(() => {
+    setPendingRef(null);
+    setCheckoutUrl(null);
+    setPendingExamId(null);
+  }, []);
+
+  /**
+   * Confirm a pending entry fee.
+   *
+   * Tries the reference we still hold, then falls back to the reference-free
+   * item lookup — which is what survives a page refresh or a Paystack
+   * redirect that dropped ?reference. The server reconciles against Paystack,
+   * so this returns true for any payment that actually went through.
+   */
+  const confirmEntry = useCallback(
+    async (examId: string, reference?: string | null) => {
+      const paid = await confirmPayment({ purpose: 'entry', examId }, reference);
+      if (!paid) return false;
+      clearPending();
+      void load();
+      return true;
+    },
+    [clearPending, load]
+  );
+
+  // Coming back from Paystack via a same-tab redirect: the reference is in
+  // the URL, but the in-memory pending state was wiped by the reload.
   useEffect(() => {
-    if (!pendingRef) return;
+    const returned = getReturnedPaymentReference();
+    if (!returned) return;
+    clearReturnedPaymentReference();
+
     let cancelled = false;
     (async () => {
-      const paid = await verifyPayment(pendingRef);
-      if (cancelled) return;
-      if (paid) {
-        setPendingRef(null);
-        await dialog.notify(
-          'Payment successful 🎉',
-          'Your payment was confirmed. You can now start the exam.'
-        );
-        void load();
-      }
+      const paid = await confirmPayment({ purpose: 'entry' }, returned).catch(() => false);
+      if (cancelled || !paid) return;
+      clearPending();
+      await dialog.notify(
+        'Payment successful 🎉',
+        'Your payment was confirmed. You can now start the exam.'
+      );
+      void load();
     })();
+
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingRef]);
+  }, []);
+
+  // While a checkout is open, confirm it whenever the screen regains focus
+  // (tab switch / app foreground) so the student never has to press anything.
+  useEffect(() => {
+    if (!pendingRef && !pendingExamId) return;
+
+    let cancelled = false;
+    const recheck = async () => {
+      if (!pendingExamId) return;
+      const recovered = await recoverPaymentState({
+        purpose: 'entry',
+        examId: pendingExamId,
+      });
+      if (cancelled || !recovered.paid) return;
+      clearPending();
+      await dialog.notify(
+        'Payment successful 🎉',
+        'Your payment was confirmed. You can now start the exam.'
+      );
+      void load();
+    };
+
+    void recheck();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void recheck();
+    });
+
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRef, pendingExamId]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -110,6 +186,7 @@ export default function PastQuestionsScreen({ navigation }: Props) {
     try {
       const outcome = await initiatePayment(exam._id, 'entry');
       if (outcome.paid) {
+        clearPending();
         await dialog.notify(
           'Payment successful 🎉',
           'Entry unlocked. Good luck with the paper!'
@@ -117,14 +194,16 @@ export default function PastQuestionsScreen({ navigation }: Props) {
         void load();
         return;
       }
-      // Real Paystack checkout: open it and wait for confirmation.
+      // Real Paystack checkout. Record the pending state BEFORE navigating:
+      // on web openCheckout() replaces the page, so anything set after it may
+      // never run.
       setCheckoutUrl(outcome.authorizationUrl);
       setPendingRef(outcome.reference);
+      setPendingExamId(exam._id);
       await openCheckout(outcome.authorizationUrl);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Payment could not be started.');
-      setPendingRef(null);
-      setCheckoutUrl(null);
+      clearPending();
     } finally {
       setBusyId(null);
     }
@@ -227,31 +306,30 @@ export default function PastQuestionsScreen({ navigation }: Props) {
             <Button
               title="I've paid — confirm"
               size="sm"
+              loading={confirming}
               style={{ flex: 1 }}
               onPress={async () => {
-                const paid = await verifyPayment(pendingRef);
-                if (paid) {
-                  setPendingRef(null);
-                  setCheckoutUrl(null);
-                  await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
-                  void load();
-                } else {
-                  await dialog.notify(
-                    'Not confirmed yet',
-                    "We couldn't find the payment yet. Check the Paystack page, then try again."
-                  );
+                setConfirming(true);
+                try {
+                  const paid = pendingExamId
+                    ? await confirmEntry(pendingExamId, pendingRef)
+                    : await confirmPayment({ purpose: 'entry' }, pendingRef);
+                  if (paid) {
+                    clearPending();
+                    await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
+                    void load();
+                  } else {
+                    await dialog.notify(
+                      'Not confirmed yet',
+                      "We couldn't find the payment yet. Check the Paystack page, then try again."
+                    );
+                  }
+                } finally {
+                  setConfirming(false);
                 }
               }}
             />
-            <Button
-              title="Cancel"
-              variant="ghost"
-              size="sm"
-              onPress={() => {
-                setPendingRef(null);
-                setCheckoutUrl(null);
-              }}
-            />
+            <Button title="Cancel" variant="ghost" size="sm" onPress={clearPending} />
           </View>
         </Card>
       )}

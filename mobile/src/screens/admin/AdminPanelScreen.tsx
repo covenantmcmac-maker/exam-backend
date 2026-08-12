@@ -12,6 +12,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Badge, Button, Card, Field, Loading, StatTile } from '../../components/ui';
 import { adminApi, AdminPastStats } from '../../api/endpoints';
 import { formatFee } from '../../utils/payments';
+import { buildCsv, downloadCsv } from '../../utils/csv';
 import { useAuth } from '../../context/AuthContext';
 import { useDialog } from '../../components/Dialog';
 import type { NavigationProp } from '@react-navigation/native';
@@ -211,6 +212,90 @@ export default function AdminPanelScreen() {
       setAttempts((prev) => prev.filter((x) => x._id !== a._id));
     } catch (e) {
       void dialog.notify('Error', e instanceof Error ? e.message : 'Delete failed.');
+    }
+  };
+
+  const notifyDownloadUnavailable = (what: string) =>
+    void dialog.notify(
+      'Download unavailable',
+      `CSV downloads are available in the web/PWA version. Open the app in a browser to download ${what}.`
+    );
+
+  /** Platform-wide results export: every attempt across every exam. */
+  const downloadAttempts = () => {
+    const csv = buildCsv(
+      [
+        'Student name',
+        'Student email',
+        'Exam',
+        'Subject',
+        'Score',
+        'Total points',
+        'Percentage',
+        'Status',
+        'Started',
+        'Completed',
+        'Time spent (seconds)',
+      ],
+      attempts.map((a) => {
+        const student = typeof a.student === 'object' ? a.student : null;
+        const exam = typeof a.exam === 'object' ? a.exam : null;
+        return [
+          student?.name || 'Student',
+          student?.email || '',
+          exam?.title || 'Exam',
+          exam?.subject || '',
+          a.score ?? 0,
+          a.totalPoints ?? 0,
+          `${Math.round(a.percentage || 0)}%`,
+          a.status,
+          a.startedAt ? new Date(a.startedAt).toLocaleString() : '',
+          a.completedAt ? new Date(a.completedAt).toLocaleString() : '',
+          a.timeSpent ?? '',
+        ];
+      })
+    );
+
+    if (!downloadCsv('all-exam-results.csv', csv)) {
+      notifyDownloadUnavailable('results');
+    }
+  };
+
+  /** Revenue export: one row per payment, for reconciliation against Paystack. */
+  const downloadPayments = () => {
+    const csv = buildCsv(
+      [
+        'Student name',
+        'Student email',
+        'Item',
+        'Purpose',
+        'Amount',
+        'Currency',
+        'Status',
+        'Reference',
+        'Created',
+        'Paid at',
+      ],
+      payments.map((p) => {
+        const student = typeof p.student === 'object' ? p.student : null;
+        const exam = typeof p.exam === 'object' ? p.exam : null;
+        return [
+          student?.name || 'Student',
+          student?.email || '',
+          exam?.title || 'Student registration',
+          p.purpose,
+          p.amount,
+          p.currency,
+          p.status,
+          p.reference || '',
+          p.createdAt ? new Date(p.createdAt).toLocaleString() : '',
+          p.paidAt ? new Date(p.paidAt).toLocaleString() : '',
+        ];
+      })
+    );
+
+    if (!downloadCsv('payments.csv', csv)) {
+      notifyDownloadUnavailable('payments');
     }
   };
 
@@ -626,6 +711,19 @@ export default function AdminPanelScreen() {
           </>
         )}
 
+        {tab === 'attempts' && (
+          <View style={styles.rowTop}>
+            <Text style={styles.sectionLabel}>All attempts ({attempts.length})</Text>
+            <Button
+              title="Download CSV"
+              variant="ghost"
+              size="sm"
+              disabled={attempts.length === 0}
+              onPress={downloadAttempts}
+            />
+          </View>
+        )}
+
         {tab === 'attempts' &&
           attempts.map((a) => {
             const student = typeof a.student === 'object' ? a.student : null;
@@ -646,6 +744,16 @@ export default function AdminPanelScreen() {
 
         {tab === 'payments' && (
           <>
+            <View style={styles.rowTop}>
+              <Text style={styles.sectionLabel}>Payments ({payments.length})</Text>
+              <Button
+                title="Download CSV"
+                variant="ghost"
+                size="sm"
+                disabled={payments.length === 0}
+                onPress={downloadPayments}
+              />
+            </View>
             <View style={styles.statRow}>
               <StatTile label="Revenue" value={paymentTotals.totalRevenue.toLocaleString()} tint={colors.success} />
               <StatTile label="Entry pays" value={paymentTotals.entryCount} tint={colors.primary} />

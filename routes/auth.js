@@ -54,7 +54,7 @@ router.post('/register', async (req, res) => {
     const registrationRequirement = await getRegistrationRequirement(user);
     if (registrationRequirement.required) {
       return res.status(402).json(
-        buildRegistrationPaymentRequiredPayload(
+        await buildRegistrationPaymentRequiredPayload(
           user,
           registrationRequirement,
           'Account created. Complete the one-time registration payment before you sign in.'
@@ -98,7 +98,7 @@ router.post('/login', async (req, res) => {
     const registrationRequirement = await getRegistrationRequirement(user);
     if (registrationRequirement.required) {
       return res.status(402).json(
-        buildRegistrationPaymentRequiredPayload(
+        await buildRegistrationPaymentRequiredPayload(
           user,
           registrationRequirement,
           'Complete the one-time registration payment before you sign in.'

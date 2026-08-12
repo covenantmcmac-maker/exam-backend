@@ -13,6 +13,7 @@ import type {
   PastExam,
   Payment,
   PaymentPurpose,
+  PaymentStatusResult,
   Question,
   Role,
   SecurityFlagResult,
@@ -316,6 +317,29 @@ export const paymentsApi = {
       body: payload,
       auth: payload.purpose !== 'registration' || !payload.paymentToken,
     }),
+
+  /**
+   * Reference-free recovery: ask whether THIS item is already paid for.
+   *
+   * Survives a page refresh and a return from Paystack that lost its
+   * ?reference, because it is keyed on what is being bought rather than on
+   * the transaction id. The server reconciles any pending charge against
+   * Paystack before answering.
+   */
+  status: (params: {
+    purpose: PaymentPurpose;
+    examId?: string;
+    attemptId?: string;
+    paymentToken?: string;
+  }) => {
+    const qs = new URLSearchParams({ purpose: params.purpose });
+    if (params.examId) qs.append('examId', params.examId);
+    if (params.attemptId) qs.append('attemptId', params.attemptId);
+    if (params.paymentToken) qs.append('paymentToken', params.paymentToken);
+    return request<PaymentStatusResult>(`/api/payments/status?${qs.toString()}`, {
+      auth: !params.paymentToken,
+    });
+  },
 
   /** Confirm payment after returning from the Paystack checkout. */
   verify: (reference: string, paymentToken?: string) => {

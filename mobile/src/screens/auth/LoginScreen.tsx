@@ -30,10 +30,10 @@ import {
   savePendingRegistrationPayment,
 } from '../../utils/registration-payments';
 import {
+  confirmPayment,
   formatFee,
   initiateRegistrationPayment,
   openCheckout,
-  verifyPayment,
 } from '../../utils/payments';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
@@ -74,12 +74,19 @@ export default function LoginScreen({ navigation }: Props) {
       setCheckoutUrl(pending.checkoutUrl || null);
       setPaymentMessage('Complete the one-time registration payment before you sign in.');
 
+      // Always re-check: the reference is only present on a same-tab redirect
+      // back from Paystack, but the payment may equally have settled while we
+      // were away (webhook, another device, or a reload that ate the URL).
       const returnedReference = getReturnedPaymentReference();
-      if (!returnedReference) return;
-      clearReturnedPaymentReference();
+      if (returnedReference) clearReturnedPaymentReference();
 
       setPayBusy(true);
-      const paid = await verifyPayment(returnedReference, pending.paymentToken);
+      // Reference first, then the reference-free item lookup — so a payment
+      // that settled without us hearing about it still signs the student in.
+      const paid = await confirmPayment(
+        { purpose: 'registration', paymentToken: pending.paymentToken },
+        returnedReference
+      );
       if (cancelled) return;
       if (paid) {
         await clearPendingRegistrationPayment();
@@ -92,8 +99,13 @@ export default function LoginScreen({ navigation }: Props) {
           return;
         }
       }
-      setPendingRef(returnedReference);
-      setError('Payment was not confirmed yet. You can reopen Paystack or confirm again.');
+      // Keep whichever reference we have; never downgrade a saved one to null.
+      setPendingRef((prev) => returnedReference || prev);
+      // Only complain if the student actually came back from a checkout. A
+      // silent background re-check that finds nothing is not an error.
+      if (returnedReference) {
+        setError('Payment was not confirmed yet. You can reopen Paystack or confirm again.');
+      }
       setPayBusy(false);
     })();
 
@@ -179,11 +191,11 @@ export default function LoginScreen({ navigation }: Props) {
   };
 
   const confirmRegistrationPayment = async () => {
-    if (!paymentToken || !pendingRef) return;
+    if (!paymentToken) return;
     setPayBusy(true);
     setError(null);
     try {
-      const paid = await verifyPayment(pendingRef, paymentToken);
+      const paid = await confirmPayment({ purpose: 'registration', paymentToken }, pendingRef);
       if (!paid) {
         await dialog.notify(
           'Not confirmed yet',

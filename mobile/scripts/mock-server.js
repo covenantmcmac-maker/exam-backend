@@ -226,6 +226,56 @@ const server = http.createServer((req, res) => {
     }
     calls.push({ key, authed, body });
 
+    // Reference-free payment lookup: "is THIS item already paid for?".
+    // Mirrors the real route, which also reconciles a pending charge against
+    // Paystack before answering.
+    if (key === 'GET /api/payments/status') {
+      const purpose = parsedUrl.searchParams.get('purpose');
+      const examId = parsedUrl.searchParams.get('examId');
+      const attemptId = parsedUrl.searchParams.get('attemptId');
+      const paymentToken = parsedUrl.searchParams.get('paymentToken');
+
+      if (!['entry', 'review', 'registration'].includes(purpose)) {
+        return send(res, 400, { message: 'A valid purpose is required.' });
+      }
+      if (purpose === 'registration') {
+        if (paymentToken !== REGISTRATION_PAYMENT_TOKEN) {
+          return send(res, 401, { message: 'Please sign in to check this payment.' });
+        }
+      } else if (!authed) {
+        return send(res, 401, { message: 'Please sign in to check this payment.' });
+      }
+      if (purpose !== 'registration' && !examId) {
+        return send(res, 400, { message: 'examId is required for this purpose.' });
+      }
+
+      const matching = paymentHistory().filter((p) => {
+        if (p.purpose !== purpose) return false;
+        if (purpose === 'registration') return true;
+        if (String(p.exam) !== String(examId)) return false;
+        return purpose === 'review'
+          ? String(p.attempt || '') === String(attemptId || '')
+          : true;
+      });
+
+      const paid = matching.find((p) => p.status === 'paid');
+      if (paid) return send(res, 200, { paid: true, payment: paid, pending: null });
+
+      const pending = matching.find((p) => p.status === 'pending');
+      return send(res, 200, {
+        paid: false,
+        payment: null,
+        pending: pending
+          ? {
+              reference: pending.reference,
+              amount: pending.amount,
+              currency: pending.currency,
+              authorizationUrl: 'https://paystack.test/resume/' + pending.reference,
+            }
+          : null,
+      });
+    }
+
     const verifyMatch = key.match(/^GET \/api\/payments\/([^/]+)\/verify$/);
     if (verifyMatch) {
       const payment = paymentFor(verifyMatch[1]);

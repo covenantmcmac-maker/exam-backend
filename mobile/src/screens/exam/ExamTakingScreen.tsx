@@ -22,7 +22,17 @@ import { useDialog } from '../../components/Dialog';
 import { attemptsApi, configApi, examsApi } from '../../api/endpoints';
 import { ApiError, getToken } from '../../api/client';
 import { API_BASE_URL } from '../../config';
-import { formatFee, initiatePayment, openCheckout, verifyPayment } from '../../utils/payments';
+import {
+  confirmPayment,
+  formatFee,
+  initiatePayment,
+  openCheckout,
+  recoverPaymentState,
+} from '../../utils/payments';
+import {
+  clearReturnedPaymentReference,
+  getReturnedPaymentReference,
+} from '../../utils/registration-payments';
 import { radius, spacing } from '../../theme';
 import { useColors } from '../../context/ThemeContext';
 import type { Colors } from '../../theme';
@@ -85,6 +95,10 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
   const securityFlaggingRef = useRef(false);
 
   /* ------------------------------------------------------------- bootstrap */
+  // Lets bootstrap re-enter itself after recovering a payment, without making
+  // the callback depend on its own identity.
+  const bootstrapRef = useRef<(() => Promise<void>) | null>(null);
+
   const bootstrap = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -136,9 +150,39 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
       setRemaining(left);
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {
-        // Paid paper, entry fee not paid yet.
-        const amount = Number((e.data as { amount?: unknown })?.amount);
+        // Paid paper — but the student may in fact have paid already and just
+        // lost the confirmation (refresh, or a redirect back from Paystack
+        // that dropped ?reference). Before showing the paywall, try to
+        // recover the real state; if it comes back paid we reload straight
+        // into the exam instead of asking for money a second time.
+        const data = e.data as {
+          amount?: unknown;
+          pendingReference?: unknown;
+          pendingAuthorizationUrl?: unknown;
+        };
+
+        const returned = getReturnedPaymentReference();
+        if (returned) clearReturnedPaymentReference();
+
+        const settled = await confirmPayment({ purpose: 'entry', examId }, returned);
+        if (settled) {
+          void bootstrapRef.current?.();
+          return;
+        }
+
+        const amount = Number(data?.amount);
         setPaywall({ amount: Number.isFinite(amount) ? amount : 0 });
+        // Resume the interrupted checkout rather than opening a second one.
+        const pendingReference =
+          typeof data?.pendingReference === 'string' ? data.pendingReference : null;
+        if (pendingReference) {
+          setPendingRef(pendingReference);
+          setCheckoutUrl(
+            typeof data?.pendingAuthorizationUrl === 'string'
+              ? data.pendingAuthorizationUrl
+              : null
+          );
+        }
       } else {
         setLoadError(e instanceof Error ? e.message : 'Could not load exam.');
       }
@@ -146,6 +190,9 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
       setLoading(false);
     }
   }, [examId]);
+
+
+  bootstrapRef.current = bootstrap;
 
   useEffect(() => {
     void bootstrap();
@@ -174,6 +221,67 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
       setPayBusy(false);
     }
   };
+
+  /** "I've paid — confirm": reference first, then the reference-free lookup. */
+  const confirmEntryPayment = useCallback(async () => {
+    setPayBusy(true);
+    try {
+      const paid = await confirmPayment({ purpose: 'entry', examId }, pendingRef);
+      if (paid) {
+        setPendingRef(null);
+        setCheckoutUrl(null);
+        await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
+        void bootstrap();
+        return;
+      }
+      await dialog.notify(
+        'Not confirmed yet',
+        "We couldn't find the payment yet. Check the Paystack page, then try again."
+      );
+    } finally {
+      setPayBusy(false);
+    }
+  }, [bootstrap, dialog, examId, pendingRef]);
+
+  // While a checkout is open, re-check on every focus/foreground. Coming back
+  // from Paystack (tab switch, app resume, or the redirect itself) settles the
+  // paywall without the student having to press anything.
+  useEffect(() => {
+    if (!paywall) return;
+
+    let cancelled = false;
+    const recheck = async () => {
+      const recovered = await recoverPaymentState({ purpose: 'entry', examId });
+      if (cancelled) return;
+      if (recovered.paid) {
+        setPendingRef(null);
+        setCheckoutUrl(null);
+        void bootstrap();
+        return;
+      }
+      // Adopt a pending checkout started on another device/tab so "Reopen
+      // Paystack" keeps working instead of starting a second charge.
+      if (recovered.pendingReference) {
+        setPendingRef((prev) => prev ?? recovered.pendingReference);
+        setCheckoutUrl((prev) => prev ?? recovered.pendingCheckoutUrl);
+      }
+    };
+
+    void recheck();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void recheck();
+    });
+    const unsubscribeFocus = navigation.addListener('focus', () => {
+      void recheck();
+    });
+
+    return () => {
+      cancelled = true;
+      sub.remove();
+      unsubscribeFocus();
+    };
+  }, [bootstrap, examId, navigation, paywall]);
 
   /* ----------------------------------------------------------------- submit */
   const openResult = useCallback(
@@ -592,21 +700,9 @@ export default function ExamTakingScreen({ route, navigation }: Props) {
               />
               <Button
                 title="I've paid — confirm"
+                loading={payBusy}
                 style={{ marginTop: spacing.sm, alignSelf: 'stretch' }}
-                onPress={async () => {
-                  const paid = await verifyPayment(pendingRef);
-                  if (paid) {
-                    setPendingRef(null);
-                    setCheckoutUrl(null);
-                    await dialog.notify('Payment successful 🎉', 'Entry unlocked.');
-                    void bootstrap();
-                  } else {
-                    await dialog.notify(
-                      'Not confirmed yet',
-                      "We couldn't find the payment yet. Check the Paystack page, then try again."
-                    );
-                  }
-                }}
+                onPress={() => void confirmEntryPayment()}
               />
             </>
           ) : (
