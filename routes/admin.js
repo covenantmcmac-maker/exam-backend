@@ -135,26 +135,51 @@ router.patch('/config', auth, authorize('admin'), async (req, res) => {
 // ========================
 router.get('/users', auth, authorize('admin'), async (req, res) => {
   try {
-    const { role, search, page = 1, limit = 50 } = req.query;
+    const { role, search, sort = 'newest' } = req.query;
+    const requestedPage = Number.parseInt(req.query.page, 10);
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    // Keep individual responses bounded while allowing clients to choose a
+    // practical page size. Pagination is always performed after filtering and
+    // sorting, so every sort option applies to the complete result set.
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 100)
+      : 50;
 
     const filter = {};
     if (role && role !== 'all') filter.role = role;
-    if (search) {
+    if (typeof search === 'string' && search.trim()) {
+      // Admin search is literal rather than regex syntax. Apart from avoiding
+      // malformed-pattern errors, this makes names containing punctuation
+      // searchable in the same way they are displayed.
+      const escapedSearch = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\$&');
       filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
+        { name: { $regex: escapedSearch, $options: 'i' } },
+        { email: { $regex: escapedSearch, $options: 'i' } }
       ];
     }
 
-    const total = await User.countDocuments(filter);
-    const users = await User.find(filter)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * parseInt(limit))
-      .limit(parseInt(limit));
+    const sortOptions = {
+      newest: { createdAt: -1, _id: -1 },
+      name_asc: { name: 1, _id: 1 },
+      name_desc: { name: -1, _id: -1 },
+    };
+    const selectedSort = sortOptions[sort] || sortOptions.newest;
 
-    res.json({ users, total, pages: Math.ceil(total / parseInt(limit)) });
+    const total = await User.countDocuments(filter);
+    let query = User.find(filter).select('-password');
+    if (sort === 'name_asc' || sort === 'name_desc') {
+      // Case-insensitive collation gives human alphabetical order in MongoDB.
+      query = query.collation({ locale: 'en', strength: 2 });
+    }
+    const users = await query
+      .sort(selectedSort)
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    res.json({ users, total, pages: Math.ceil(total / limit) });
   } catch (error) {
+    console.error('Admin users error:', error);
     res.status(500).json({ message: 'Error fetching users' });
   }
 });

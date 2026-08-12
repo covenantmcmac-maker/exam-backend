@@ -19,6 +19,7 @@ const teacher = {
   email: 'teacher@example.com',
   role: 'teacher',
   mustChangePassword: false,
+  createdAt: '2026-01-01T00:00:00.000Z',
 };
 const admin = {
   id: 'u_admin',
@@ -27,6 +28,7 @@ const admin = {
   email: 'admin@example.com',
   role: 'admin',
   mustChangePassword: false,
+  createdAt: '2026-02-01T00:00:00.000Z',
 };
 const student = {
   id: 'u_student',
@@ -35,6 +37,7 @@ const student = {
   email: 'student@example.com',
   role: 'student',
   mustChangePassword: false,
+  createdAt: '2026-03-01T00:00:00.000Z',
 };
 const existingStudent = {
   id: 'u_existing',
@@ -43,6 +46,7 @@ const existingStudent = {
   email: 'existing@example.com',
   role: 'student',
   mustChangePassword: false,
+  createdAt: '2026-04-01T00:00:00.000Z',
 };
 
 const users = [teacher, admin, student, existingStudent];
@@ -224,7 +228,12 @@ const server = http.createServer((req, res) => {
     } catch {
       body = {};
     }
-    calls.push({ key, authed, body });
+    calls.push({
+      key,
+      authed,
+      body,
+      query: Object.fromEntries(parsedUrl.searchParams.entries()),
+    });
 
     // Reference-free payment lookup: "is THIS item already paid for?".
     // Mirrors the real route, which also reconciles a pending charge against
@@ -831,8 +840,41 @@ const server = http.createServer((req, res) => {
       case 'PATCH /api/admin/past-questions/pq1':
         return send(res, 200, { message: 'Past question updated', question: pastQuestion });
 
-      case 'GET /api/admin/users':
-        return send(res, 200, { users, total: users.length, pages: 1 });
+      case 'GET /api/admin/users': {
+        const role = parsedUrl.searchParams.get('role');
+        const search = String(parsedUrl.searchParams.get('search') || '').trim().toLowerCase();
+        const sort = parsedUrl.searchParams.get('sort') || 'newest';
+        const parsedPage = Number.parseInt(parsedUrl.searchParams.get('page'), 10);
+        const parsedLimit = Number.parseInt(parsedUrl.searchParams.get('limit'), 10);
+        const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+        const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+          ? Math.min(parsedLimit, 100)
+          : 50;
+
+        let matchingUsers = users.filter((user) => {
+          if (role && role !== 'all' && user.role !== role) return false;
+          if (!search) return true;
+          return user.name.toLowerCase().includes(search) || user.email.toLowerCase().includes(search);
+        });
+
+        matchingUsers = [...matchingUsers].sort((a, b) => {
+          if (sort === 'name_asc') {
+            return a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }) || a._id.localeCompare(b._id);
+          }
+          if (sort === 'name_desc') {
+            return b.name.localeCompare(a.name, 'en', { sensitivity: 'base' }) || b._id.localeCompare(a._id);
+          }
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() || b._id.localeCompare(a._id);
+        });
+
+        const total = matchingUsers.length;
+        const start = (page - 1) * limit;
+        return send(res, 200, {
+          users: matchingUsers.slice(start, start + limit),
+          total,
+          pages: Math.ceil(total / limit),
+        });
+      }
 
       case 'GET /api/admin/exams':
         return send(res, 200, [exam, { ...pastExam, creator: { _id: teacher._id, name: teacher.name } }]);

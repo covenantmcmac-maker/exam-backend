@@ -378,6 +378,16 @@ export interface AdminPastStats {
   recent: { _id: string; questionText: string; subject?: string; pastQuestionYear?: number; movedToPastAt?: string; creator?: { name?: string } }[];
 }
 
+export type AdminUserSort = 'newest' | 'name_asc' | 'name_desc';
+
+export interface AdminUsersParams {
+  role?: string;
+  search?: string;
+  page?: number;
+  limit?: number;
+  sort?: AdminUserSort;
+}
+
 export const adminApi = {
   stats: () => request<AdminStats & { totalActiveQuestions?: number; totalPastQuestions?: number; pastByYear?: { _id: number; count: number }[]; pastBySubject?: { _id: string; count: number }[] }>('/api/admin/stats'),
 
@@ -389,10 +399,10 @@ export const adminApi = {
       body: payload,
     }),
 
-  users: (params: { role?: string; search?: string } = {}) => {
+  users: (params: AdminUsersParams = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
-      if (v) qs.append(k, v);
+      if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
     });
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<{ users: User[]; total: number; pages: number }>(
