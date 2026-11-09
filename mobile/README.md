@@ -57,7 +57,7 @@ Do **not** include a trailing `/api` — the endpoint helpers add it.
 `server.js` only allows these origins:
 
 ```js
-origin: ['http://localhost:3000', 'https://macmultimediaexams.netlify.app']
+origin: ['http://localhost:3000', 'https://macmultimediaexam.netlify.app']
 ```
 
 **Native Android/iOS builds are unaffected** — they don't send an `Origin`

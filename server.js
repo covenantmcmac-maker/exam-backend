@@ -24,7 +24,8 @@ app.use(cors({
     'http://localhost:3000',   // Create React App dev server
     'http://localhost:8081',   // Expo web dev server (npm run web)
     'http://localhost:8080',   // local PWA preview (npm run serve:pwa)
-    'https://macmultimediaexams.netlify.app'
+    'https://macmultimediaexams.netlify.app',
+    'https://macmultimediaexam.netlify.app'
   ],
   credentials: true
 }));
