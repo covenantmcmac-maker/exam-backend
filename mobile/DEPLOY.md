@@ -1,18 +1,19 @@
-# Deploying the PWA to macmultimediaexams.netlify.app
+# Deploying the PWA to macmultimediaexam.netlify.app
 
 This guide covers replacing your existing site with the installable PWA, keeping
 the same URL.
 
-**Good news:** because the domain doesn't change, your backend needs **no
-changes at all**. `macmultimediaexams.netlify.app` is already in the CORS
-allowlist in `server.js`, so logins keep working the moment the new site goes
-up. Don't touch Render.
+The deployed API must allow this exact Netlify origin. The repository's
+`server.js` now includes `https://macmultimediaexam.netlify.app` in its CORS
+allowlist. **Deploy this backend change to Render before testing the site**;
+until Render is running the updated code, browser API requests from the new
+site can fail with a connection error.
 
 Verify that yourself any time:
 
 ```bash
 cd mobile
-npm run check:deploy https://macmultimediaexams.netlify.app
+npm run check:deploy https://macmultimediaexam.netlify.app
 ```
 
 You should see `Ready to deploy.` with no warnings.
@@ -93,7 +94,7 @@ Site is live ✨
 
 ## Checking it worked
 
-Open `https://macmultimediaexams.netlify.app` on an **Android phone in Chrome**:
+Open `https://macmultimediaexam.netlify.app` on an **Android phone in Chrome**:
 
 1. **The app loads** — new design, indigo theme, "Sign in to continue".
 2. **Log in with an existing account.** Same accounts as before; nothing was
@@ -157,7 +158,7 @@ You can verify a branch is deployable before touching Netlify:
 
 ```bash
 cd mobile
-npm run check:deploy https://macmultimediaexams.netlify.app
+npm run check:deploy https://macmultimediaexam.netlify.app
 ```
 
 It fails loudly if a branch is missing the build config.
